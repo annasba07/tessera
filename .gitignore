@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+.env.local
+.pytest_cache/
+
+# Build artifacts
+dist/
+build/
+
+# Per-run outputs
+narratives/
+synthesis.json
+synthesis.md
+synthesis.html
+observations.json
+
+# OS
+.DS_Store

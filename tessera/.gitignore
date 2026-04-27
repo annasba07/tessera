@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+.env.local
+
+# Build artifacts
+dist/
+build/
+
+# Per-run outputs (keep cache, drop ad-hoc outputs)
+narratives/
+synthesis.json
+synthesis.md
+observations.json

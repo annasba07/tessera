@@ -1,0 +1,7 @@
+{
+  "name": "reflect",
+  "description": "Reflect on your AI coding agent sessions. Reads your local Claude Code, Codex, and Gemini CLI traces and produces an interactive dashboard with evidence-grounded cross-session findings.",
+  "version": "0.4.0",
+  "homepage": "https://github.com/annasba07/tessera",
+  "license": "MIT"
+}

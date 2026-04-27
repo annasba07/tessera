@@ -1,0 +1,7 @@
+{
+  "name": "tessera-live",
+  "description": "In-session coach. Watches your Claude Code session for known waste patterns — browser spirals, blind retries, permission-wall loops, runaway call rates, edits without verification, delegation sprawl — and nudges Claude with a short note when one appears. Silent on the happy path. Reads your tessera ratings to tune signal-to-noise.",
+  "version": "0.4.0",
+  "homepage": "https://github.com/annasba07/tessera",
+  "license": "MIT"
+}

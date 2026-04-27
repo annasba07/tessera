@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tessera-live-hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
