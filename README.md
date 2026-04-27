@@ -2,6 +2,10 @@
 
 Two complementary tools for understanding and improving how you use AI coding agents.
 
+> 🔍 **[Live demo →](https://annasba07.github.io/tessera/)** (fictional data, click around in 5 seconds)
+
+![Tessera dashboard preview](docs/screenshot-findings.png)
+
 ## What's in this repo
 
 | Package | What it does |

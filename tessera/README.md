@@ -1,8 +1,12 @@
 # tessera
 
-Reflect on how you actually use AI coding agents.
+**Reflect on how you actually use AI coding agents.**
 
 Reads your local Claude Code, Codex, and Gemini CLI session traces, builds rich per-session narratives, then synthesizes cross-session patterns you can act on this week — surfaced as an interactive HTML dashboard you open in any browser. No API key, no server, no telemetry.
+
+> 🔍 **[Live demo →](https://annasba07.github.io/tessera/)** (fictional data, click around to see what tessera produces — no install needed)
+
+![Tessera dashboard — Findings view](../docs/screenshot-findings.png)
 
 Adding another agent CLI is one parser function; the narrative + synthesis layers are agent-agnostic.
 
