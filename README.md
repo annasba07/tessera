@@ -19,7 +19,7 @@ The two close a feedback loop: weekly reflection produces evidence-grounded find
 
 ```bash
 # Install the CLI (also provides the coach hook binary)
-pip install tessera
+pip install tessera-agents
 
 # Run a weekly retrospective
 tessera run

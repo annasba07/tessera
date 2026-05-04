@@ -26,9 +26,9 @@ Every rule has a cooldown so it doesn't re-fire constantly. First time a rule fi
 Requires [`tessera`](../tessera/) installed first (provides the `tessera-live-hook` CLI the plugin shells out to):
 
 ```bash
-pip install tessera
+pip install tessera-agents
 # or
-uv tool install tessera
+uv tool install tessera-agents
 ```
 
 Then install this plugin in Claude Code:

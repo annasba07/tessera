@@ -16,9 +16,9 @@ You are running the `/tessera` command. Your job is to invoke the `tessera` CLI 
    If that fails with "command not found" or similar, instruct the user to install it first:
 
    ```
-   pip install tessera
+   pip install tessera-agents
    # or
-   uv tool install tessera
+   uv tool install tessera-agents
    ```
 
    Stop until they confirm it's installed.

@@ -59,10 +59,12 @@ See [docs/schema/v1.md](docs/schema/v1.md) for the full per-session schema and [
 Requires Python 3.11+ and an authenticated `claude` CLI (version 2+). No `ANTHROPIC_API_KEY` — token usage routes through your existing Claude Code auth.
 
 ```bash
-pip install tessera
+pip install tessera-agents
 # or
-uv tool install tessera
+uv tool install tessera-agents
 ```
+
+> The PyPI package is `tessera-agents` (the bare name `tessera` was taken). The CLI binary, slash command, and import are all just `tessera`.
 
 ## Use
 
