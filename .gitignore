@@ -10,8 +10,9 @@ __pycache__/
 dist/
 build/
 
-# Per-run outputs
-narratives/
+# Per-run outputs (anchored so they don't shadow src/tessera/narratives/)
+/narratives/
+/tessera/narratives/
 synthesis.json
 synthesis.md
 synthesis.html

@@ -677,9 +677,12 @@ def _rate_import_command(args: argparse.Namespace) -> int:
             return 1
         slug = latest.slug
 
-    # Validate the slug exists
-    if not store.load_run(slug):
-        print(f"error: run not found in history: {slug}", file=sys.stderr)
+    try:
+        if not store.load_run(slug):
+            print(f"error: run not found in history: {slug}", file=sys.stderr)
+            return 1
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
 
     cleaned: list[dict] = []

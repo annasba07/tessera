@@ -9,8 +9,9 @@ __pycache__/
 dist/
 build/
 
-# Per-run outputs (keep cache, drop ad-hoc outputs)
-narratives/
+# Per-run outputs (keep cache, drop ad-hoc outputs).
+# Anchored to repo root so it doesn't shadow src/tessera/narratives/.
+/narratives/
 synthesis.json
 synthesis.md
 observations.json

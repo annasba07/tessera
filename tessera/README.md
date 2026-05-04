@@ -145,6 +145,12 @@ All token usage routes through your `claude` CLI auth — no separate billing.
 - **Doesn't classify with keywords.** Task types and waste signatures come from LLM judgment grounded in event evidence, validated against a closed vocabulary.
 - **Doesn't send your data anywhere.** Local read of trace files; LLM calls go through your existing auth; output stays on disk.
 
+## Privacy
+
+Everything runs locally. Trace files are read from `~/.claude/projects/`, `~/.codex/sessions/`, and `~/.gemini/tmp/` (or wherever you've configured those agents). The two LLM calls (per-session narrative + cross-session synthesis) route through your existing authenticated `claude` CLI — no separate API key, no telemetry, no analytics. Cached narratives, synthesis output, and run history live under `~/.cache/tessera/` and `~/.config/tessera/`.
+
+The dashboard quotes verbatim text from your sessions — friction moments, error messages, decision rationale. **Review before sharing screenshots or `synthesis.md`** — they may contain code snippets, file paths, secrets you typed into prompts, or other content from your sessions.
+
 ## Repo layout
 
 ```

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +31,12 @@ DEFAULT_DATA_DIR = Path.home() / ".config" / "tessera" / "history"
 DEFAULT_KEEP_RUNS = 12
 DEFAULT_RECENT_FOR_PROMPT = 3
 
+# Slugs are derived from ISO timestamps via _safe_slug, so the legal
+# character set is digits, letters (T), '-' and '_'. Anything else is
+# either malformed or an attempt at path traversal — reject it before
+# letting it near the filesystem.
+_SLUG_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -38,6 +45,18 @@ def _now_iso() -> str:
 def _safe_slug(iso_ts: str) -> str:
     """Return a filename-safe slug of an ISO timestamp."""
     return iso_ts.replace(":", "-").replace("+", "_").replace(".", "-")
+
+
+def _validated_slug(slug: str) -> str:
+    """Return slug if it is filesystem-safe, else raise ValueError.
+
+    Slugs are interpolated into paths under data_dir; an unvalidated value
+    like '../../etc/passwd' would escape the store. Used at every entry
+    point that takes a slug from outside the module.
+    """
+    if not isinstance(slug, str) or not _SLUG_RE.match(slug):
+        raise ValueError(f"invalid run slug: {slug!r}")
+    return slug
 
 
 def _observation_key(observation: dict) -> str:
@@ -135,6 +154,7 @@ class HistoryStore:
         return record
 
     def load_run(self, slug: str) -> dict | None:
+        slug = _validated_slug(slug)
         run_path = self.data_dir / "runs" / f"{slug}.json"
         if not run_path.exists():
             return None
@@ -159,6 +179,7 @@ class HistoryStore:
     def save_ratings(self, slug: str, ratings: list[dict]) -> None:
         """Persist ratings for one run. `ratings` is a list of dicts with
         keys: index, title, key, rating."""
+        slug = _validated_slug(slug)
         ratings_path = self.data_dir / "ratings" / f"{slug}.json"
         payload = {
             "slug": slug,
@@ -177,6 +198,7 @@ class HistoryStore:
         self._write_index(entries)
 
     def load_ratings(self, slug: str) -> list[dict]:
+        slug = _validated_slug(slug)
         ratings_path = self.data_dir / "ratings" / f"{slug}.json"
         if not ratings_path.exists():
             return []
