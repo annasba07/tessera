@@ -240,20 +240,26 @@ def _extract_json(raw: str) -> dict:
 
 async def _call_claude(prompt: str, model: str) -> str:
     collected = ""
-    async for message in query(
+    agen = query(
         prompt=prompt,
         options=ClaudeAgentOptions(
             model=model,
             allowed_tools=[],
             system_prompt="Return only valid JSON. No markdown fence, no preamble.",
         ),
-    ):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    collected += block.text
-        elif isinstance(message, ResultMessage):
-            break
+    )
+    try:
+        async for message in agen:
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        collected += block.text
+            elif isinstance(message, ResultMessage):
+                break
+    finally:
+        # See parallel comment in synthesis._call_claude — explicit aclose
+        # avoids GC racing a later query() with "generator already running".
+        await agen.aclose()
     return collected
 
 
