@@ -287,6 +287,10 @@ article.observation:last-of-type { border-bottom: 0; }
 .chip.cat-prompting { background: #f4ecea; border-color: #e6d4cf; color: var(--rust); }
 .chip.cat-project_specific { background: #f1ecdc; border-color: #e3d9bf; color: var(--ink-soft); }
 .chip.cat-cross_agent { background: #ecf2f3; border-color: #d6dee0; color: var(--slate); }
+.chip.cat-behavioral { background: #efe7d8; border-color: #e0d3b4; color: var(--warm); font-style: italic; }
+
+.section-sub { font-size: 13px; color: var(--ink-mute); font-weight: 400; font-style: italic; margin-left: 6px; }
+.observation.behavioral { border-left: 3px solid var(--warm-soft); padding-left: 16px; margin-left: -19px; background: linear-gradient(to right, rgba(184,121,74,0.04), transparent 200px); }
 
 .obs-claim {
   font-size: 17px;
@@ -1068,6 +1072,95 @@ def _render_observation(
     )
 
 
+def _render_behavioral_pattern(
+    bp: dict,
+    idx: int,
+    *,
+    bp_key: str | None = None,
+) -> str:
+    """Render one behavioral_pattern entry — same structural shape as an
+    observation but with the behavioral schema fields (pattern, dimension,
+    experiment_to_try) instead of (claim, category, next_action)."""
+    title = _esc(bp.get("title") or "Pattern")
+    pattern = _esc(bp.get("pattern") or "")
+    interpretation = _esc(bp.get("interpretation") or "")
+    experiment = bp.get("experiment_to_try") or ""
+    confidence = bp.get("confidence") or "medium"
+    dimension = bp.get("dimension") or ""
+    supporting = bp.get("supporting_count") or 0
+
+    chips = []
+    if confidence:
+        chips.append(f'<span class="chip conf-{_esc(confidence)}">{_esc(confidence)}</span>')
+    if dimension:
+        chips.append(f'<span class="chip cat-behavioral">{_esc(dimension)}</span>')
+    if supporting:
+        chips.append(f'<span class="chip">{supporting} sessions</span>')
+    chips_html = '<span class="chips">' + "".join(chips) + "</span>" if chips else ""
+
+    refs = bp.get("evidence_refs") or []
+    sids = bp.get("evidence_sessions") or []
+    ref_chips = []
+    for ref, sid in zip(refs, sids):
+        ref_chips.append(
+            f'<span class="ref-chip" data-sid="{_esc(sid)}">'
+            f'<span>{_esc(ref)}</span><span class="sid">{_esc(_short_session(sid))}</span></span>'
+        )
+    refs_html = (
+        f'<div class="obs-section-label">Evidence ({supporting} sessions — click to drill in)</div>'
+        f'<div class="evidence-row">{"".join(ref_chips)}</div>'
+        if ref_chips
+        else ""
+    )
+
+    interp_html = (
+        f'<div class="obs-prose"><span class="lead">Why</span>{interpretation}</div>'
+        if interpretation
+        else ""
+    )
+
+    experiment_html = ""
+    if experiment:
+        copy_attr = _esc(experiment.replace('"', "&quot;"))
+        experiment_html = (
+            f'<div class="next-action">'
+            f'<span class="lead">Try</span>'
+            f'<button class="copy" data-copy="{copy_attr}">COPY</button>'
+            f"{_esc(experiment)}"
+            f"</div>"
+        )
+
+    rate_row = ""
+    if bp_key:
+        rate_row = (
+            f'<div class="rate-row" data-rate-row data-obs-index="{idx - 1}" '
+            f'data-obs-key="{_esc(bp_key)}" data-obs-title="{_esc(bp.get("title") or "")}" '
+            f'data-section="behavioral_patterns">'
+            '<span class="rate-label">Resonates?</span>'
+            '<button data-rate="useful">[u]seful</button>'
+            '<button data-rate="wrong">[w]rong</button>'
+            '<button data-rate="known">[k]nown</button>'
+            '<button data-rate="skip">[s]kip</button>'
+            "</div>"
+        )
+
+    return (
+        f'<article class="observation behavioral" data-obs-block>'
+        f'<div class="obs-header">'
+        f'<span class="obs-num">§{idx}</span>'
+        f'<span class="obs-title">{title}</span>'
+        f"{chips_html}"
+        f"</div>"
+        f'<p class="obs-claim">{pattern}</p>'
+        f"{refs_html}"
+        f'<div class="drilldown"></div>'
+        f"{interp_html}"
+        f"{experiment_html}"
+        f"{rate_row}"
+        f"</article>"
+    )
+
+
 def _render_quick_win(qw: dict) -> str:
     fix = qw.get("fix") or ""
     affected = qw.get("affected_sessions") or 0
@@ -1165,6 +1258,7 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
     headline = synthesis.get("headline") or "Cross-session synthesis"
     one_thing = synthesis.get("if_you_do_one_thing_this_week") or ""
     obs_list = synthesis.get("observations") or []
+    bp_list = synthesis.get("behavioral_patterns") or []
     qw_list = synthesis.get("quick_wins") or []
     pp_list = synthesis.get("per_project") or []
     meta = synthesis.get("meta", {})
@@ -1181,6 +1275,11 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
             _render_observation(o, i, cost_minutes=cost, obs_key=key)
         )
     obs_html = "".join(obs_html_parts)
+    bp_html_parts = []
+    for i, bp in enumerate(bp_list, start=1):
+        key = _observation_key(bp)
+        bp_html_parts.append(_render_behavioral_pattern(bp, i, bp_key=key))
+    bp_html = "".join(bp_html_parts)
     qw_html = "".join(_render_quick_win(q) for q in qw_list)
     pp_html = "".join(_render_project_card(p) for p in pp_list)
     timeline_html = _render_timeline(meta.get("timeline") or {})
@@ -1205,6 +1304,7 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
         '<div class="aggregate-strip">'
         f'<div class="stat"><div class="num">{total_sessions}</div><div class="lab">Sessions</div></div>'
         f'<div class="stat"><div class="num">{len(obs_list)}</div><div class="lab">Observations</div></div>'
+        f'<div class="stat"><div class="num">{len(bp_list)}</div><div class="lab">Patterns</div></div>'
         f'<div class="stat"><div class="num">{len(qw_list)}</div><div class="lab">Quick wins</div></div>'
         f'<div class="stat"><div class="num">{len(pp_list)}</div><div class="lab">Projects</div></div>'
         f'<div class="stat"><div class="num">{int(total_active):,}</div><div class="lab">Active min</div></div>'
@@ -1214,10 +1314,20 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
 
     obs_block = (
         '<section class="block">'
-        f'<h2 class="section-title">Observations <span class="count">({len(obs_list)})</span></h2>'
+        f'<h2 class="section-title">Observations <span class="count">({len(obs_list)})</span> '
+        '<span class="section-sub">— operational fixes</span></h2>'
         f"{obs_html}"
         "</section>"
         if obs_html
+        else ""
+    )
+    bp_block = (
+        '<section class="block">'
+        f'<h2 class="section-title">Behavioral patterns <span class="count">({len(bp_list)})</span> '
+        '<span class="section-sub">— how you work, comparative & experiments to try</span></h2>'
+        f"{bp_html}"
+        "</section>"
+        if bp_html
         else ""
     )
     qw_block = (
@@ -1244,6 +1354,7 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
   {timeline_html}
   {aggregate_html}
   {obs_block}
+  {bp_block}
   {qw_block}
   {pp_block}
   {notes_html}

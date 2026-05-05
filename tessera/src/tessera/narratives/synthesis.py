@@ -30,37 +30,62 @@ from claude_agent_sdk import (
 
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
-DEFAULT_MAX_OBSERVATIONS = 10
 
 
-SYNTHESIS_PROMPT = """You are reading {n_sessions} narrative summaries of one person's AI coding agent sessions. Your job: surface the cross-cutting patterns they would benefit from acting on this week.
+SYNTHESIS_PROMPT = """You are reading {n_sessions} narrative summaries of one person's AI coding agent sessions. Your job: surface cross-cutting patterns through TWO lenses simultaneously:
+
+  1. **OPERATIONAL** — what's broken in their tooling, environment, projects (the things a Friday-afternoon config edit would fix).
+  2. **BEHAVIORAL** — what's broken or worth experimenting with in *how this person works* — their prompting habits, decision patterns, intervention timing, delegation balance, verification discipline, cognitive rhythm. (The things a one-week experiment in *how* they prompt or *when* they intervene would change.)
+
+Both lenses matter. Operational gets concrete fixes. Behavioral gets the deeper insight nobody else can give them — patterns invisible from any single session.
 
 {prior_context_block}
 
-Each session below is already structured (tasks identified, friction moments labeled, recurring environmental issues called out, counterfactuals written). The per-session analysis is done. Your job is the *cross-session* layer — what shows up across sessions that they probably can't see from any single one.
+Per-session analysis is done. Your job is the cross-session layer — what shows up across sessions they can't see from any single one.
 
 ## CRITICAL: Citation by ref token only
 
 Every session below has a `ref` field — a short token like `S001`, `S047`, `S221`. When you cite a session as evidence, **cite by ref only**. Refs are exactly 4 characters: `S` followed by a 3-digit zero-padded number. Copy them character-by-character from the input.
 
-DO NOT invent refs. DO NOT cite by `session_id`. If a ref doesn't appear in the input below, it will be dropped from your output. Refs in the input go from `S001` through `S{n_sessions_padded}` — anything outside that range is a fabrication.
+DO NOT invent refs. DO NOT cite by `session_id`. If a ref doesn't appear in the input below, it will be dropped. Refs in the input go from `S001` through `S{n_sessions_padded}` — anything outside that range is a fabrication.
 
-Before you finalize, mentally scan each cited ref and confirm it appears verbatim in the input. The dropped-citation rate from prior runs was 50%+ — we are tightening this rule.
+Before you finalize, mentally scan each cited ref and confirm it appears verbatim in the input.
 
-## What makes a great cross-session observation
+## What separates great observations from mediocre ones
 
-- **Specific numbers**: "67 env issues across 57 atella sessions, 41 of them are stale Chrome locks" — not "you have lots of friction."
-- **Specific evidence**: cite the actual ref tokens that support the claim. Minimum 3 supporting refs for a "high" confidence claim.
-- **Specific fix**: a command to run, a config to add, a prompt template, a one-line habit change. Not "be more careful."
-- **Surprising or aggregate-only**: a pattern that's invisible looking at any single session. If it's obvious from one session, the per-session narrative already covered it.
+**Mediocre**: "You had 67 env issues across 57 sessions, 41 of them were stale Chrome locks." (Operational, true, but the user already knows their tooling breaks.)
 
-## Categories of observation to look for
+**Great operational**: "67 env issues, 41 are stale Chrome locks — but ALL 41 happened in `agent-2/` and `agent-3/` worktrees, never in `main`. The stale lock is a worktree-isolation problem, not a Chrome problem. Fix: pre-create per-worktree Chrome profile dirs in the worktree-init skill."
 
-- **Environmental**: stale lock files, expired auth, missing deps, MCP issues — recurring infra. Often a one-time fix per project.
-- **Prompting**: prompts the user keeps writing that lead to wasted exchanges. Usually surfaced via `lesson_for_user` and `prompt_quality_signal`.
-- **Project-specific**: a particular codebase or worktree where the agent reliably struggles in a specific way.
+**Great behavioral**: "When you open with 'try X' (47 sessions), median dead-ends = 2.3 and time-to-first-verified-progress = 8.4 events. When you open with 'the goal is Y, constraints are Z' (34 sessions), median dead-ends = 0.6 and TTFP = 3.1. The goal-first style is 2.7× more efficient by both metrics. You used `try X` 31% of the time including 8 sessions where you knew the goal — try the goal-first phrasing on Mon-Wed next week and compare your own dashboards."
+
+Behavioral observations should be:
+- **Comparative** (this style vs that style, this domain vs that domain, this time-of-day vs another) — patterns reveal themselves only by comparison
+- **Quantified** with the specific numerator AND denominator
+- **Actionable as a 1-week experiment**, not "be more careful"
+- **Surprising** — something the user wouldn't have guessed about themselves
+
+## Behavioral patterns to actively look for
+
+Read across `lesson_for_user`, `lesson_for_agent`, `prompt_q`, `decisions[].retro`, `dead_ends`, `user_friction`, `user_caught_count/examples`, `verification`, `bursts`, `events_per_min`, `subagents`, `tod` (time-of-day), `weekday`:
+
+- **Prompting style signature**: vocabulary, openers, constraint-first vs action-first, vague-trying vs specified-goal. Which styles correlate with shorter paths / fewer dead-ends?
+- **Intervention timing**: when does the user redirect the agent? (Inferred from `user_friction.explicit_corrections` vs total events.) Do early interventions correlate with better outcomes?
+- **Delegation balance**: where do they over-delegate (high `subagents` but high `dead_ends`)? Where do they under-delegate (long `active_min` with no subagents on tasks subagents could handle)?
+- **Verification discipline**: `claimed_only` vs `tested` vs `verified` rates per task type / project — where do they trust agent output without checking, and what's the cost?
+- **Catch-rate vs miss-rate**: `user_caught_count` patterns. Are they vigilant on backend Python, blind on frontend React? Late-evening sessions vs morning?
+- **Cognitive arc**: long-active-min sessions, single-burst vs fragmented (`bursts`), `events_per_min` across `tod` and `weekday`. When does work go best vs worst?
+- **Recurring lessons**: `lesson_for_user` patterns that repeat verbatim across sessions = lessons they keep rediscovering and not internalizing.
+- **Dead-end clusters**: shared root cause or shared cognitive pattern across `dead_ends`?
+- **Domain-specific blind spots**: same person succeeds easily in domain A, struggles in domain B — what's the underlying skill/style mismatch?
+- **Counterfactual recurrences**: across `counterfactual` fields, what could-have-been-better patterns repeat?
+
+## Operational patterns to actively look for
+
+- **Environmental**: stale lock files, expired auth, missing deps, MCP issues. Often a one-time per-project fix.
+- **Project-specific failure modes**: a worktree or repo where the agent reliably struggles in a specific way.
 - **Tooling/workflow**: tool choices, sequencing patterns, MCP server combos that backfire.
-- **Cross-agent**: differences between Claude / Codex / Gemini behavior on similar tasks.
+- **Cross-agent**: differences between Claude / Codex / Gemini on similar tasks.
 
 ## Output format
 
@@ -68,8 +93,8 @@ Return ONE JSON object. No markdown fence. No preamble:
 
 ```
 {
-  "headline": "<≤200 chars: the single biggest takeaway from the data>",
-  "if_you_do_one_thing_this_week": "<≤300 chars: ONE concrete action grounded in specific evidence>",
+  "headline": "<≤200 chars: single biggest takeaway across both lenses>",
+  "if_you_do_one_thing_this_week": "<≤300 chars: ONE action grounded in specific evidence — could be operational OR behavioral, whichever is highest leverage>",
 
   "observations": [
     {
@@ -80,7 +105,20 @@ Return ONE JSON object. No markdown fence. No preamble:
       "interpretation": "<2-4 sentences on why this is happening>",
       "next_action": "<concrete command, prompt, habit, or config — not 'be more careful'>",
       "confidence": "high | medium | low",
-      "category": "environmental | prompting | project_specific | tooling | workflow | cross_agent"
+      "category": "environmental | project_specific | tooling | workflow | cross_agent"
+    }
+  ],
+
+  "behavioral_patterns": [
+    {
+      "title": "<short phrase>",
+      "pattern": "<1-3 sentences: the recurring USER habit/style/tendency, with comparative numbers (style A in N sessions → outcome X; style B in M sessions → outcome Y)>",
+      "evidence_refs": ["S012", "S047", ...],
+      "supporting_count": <int = len(evidence_refs)>,
+      "interpretation": "<2-4 sentences: why this pattern exists, what underlying habit/blind spot drives it, what the cost is>",
+      "experiment_to_try": "<a specific 1-week experiment with success metric: 'On Mon-Wed, prompt with X format. On Thu-Fri, prompt with Y format. Compare dead_ends per session in next dashboard.'>",
+      "confidence": "high | medium | low",
+      "dimension": "prompting_style | intervention_timing | delegation | verification | cognitive_arc | recurring_lesson | domain_blind_spot | counterfactual_pattern"
     }
   ],
 
@@ -96,7 +134,7 @@ Return ONE JSON object. No markdown fence. No preamble:
     {
       "project": "<project_label>",
       "session_count": <int>,
-      "headline": "<≤200 chars: the dominant pattern in this project>",
+      "headline": "<≤200 chars: dominant pattern in this project>",
       "biggest_friction": "<which friction type and why>"
     }
   ],
@@ -110,17 +148,21 @@ Return ONE JSON object. No markdown fence. No preamble:
 ## Hard rules
 
 - Cite ONLY refs that appear in the INPUT below. Format: `S` + 3 digits (e.g., `S012`).
-- Cap evidence at 8 refs per observation. If a pattern has more, pick the 8 most representative.
-- Don't pad observations. If you only find 4 strong patterns, return 4. Better 4 sharp than 10 weak.
-- Confidence calibration:
-  - **high** = ≥5 supporting refs, clear pattern
-  - **medium** = 3-4 supporting refs, or 5+ with some noise
-  - **low** = a hunch worth flagging, weak evidence
-- For `quick_wins`: only include items with a concrete one-time fix (a command, a config line, a one-paragraph prompt).
-- For `per_project`: include only projects with ≥3 sessions in the input.
+- Cap evidence at 8 refs per observation/pattern. If more support exists, pick the 8 most representative.
+- Don't pad. If you only find 4 strong operational observations and 3 behavioral patterns, return 4 and 3. Better sharp than padded. Quality > count, always.
+- **Pattern targets** (these are floors, not ceilings — surface every distinct pattern the data supports):
+  - `observations` (operational): aim for 8-15. Don't merge unrelated friction sources just to hit a number; don't pad either.
+  - `behavioral_patterns`: **aim for 15-25 if the data supports it**. The data here covers 152 sessions and ~300 hours of work — there are many distinct behavioral patterns to surface, not just one per dimension. Push past the first 5 obvious ones into the second-tier patterns: micro-habits, domain-specific tendencies, time-of-day variation within prompting style, comparative differences between projects, contradictions between stated and revealed preferences. Each `dimension` value can support multiple distinct patterns (e.g., 3-4 different `prompting_style` patterns is fine if they're genuinely distinct).
+- Confidence:
+  - **high** = ≥5 supporting refs, clear pattern, comparison-supported claim
+  - **medium** = 3-4 supporting refs, or 5+ with noise/edge cases
+  - **low** = hunch worth flagging, weak evidence (these are valuable — surface them with `low` confidence rather than dropping them)
+- For `quick_wins`: only one-time fixes (a command, a config line). Behavioral changes go in `behavioral_patterns.experiment_to_try`, not here.
+- For `per_project`: only projects with ≥3 sessions.
 - No percentages unless the underlying count is ≥10.
+- Behavioral patterns should always include a comparison ("style A vs style B", "domain X vs domain Y", "early in session vs late", "Codex vs Claude on this task type", "well-formed prompt vs vague prompt", "with-subagent vs without") — comparison is what makes them insightful rather than descriptive. A pattern without a comparison is just a description.
 
-## Aggregate stats (already computed — trust these, don't recount)
+## Aggregate stats (already computed — trust, don't recount)
 
 {aggregate_block}
 
@@ -128,29 +170,37 @@ Return ONE JSON object. No markdown fence. No preamble:
 
 {sessions_block}
 
-Final reminder: cite refs (`S001`-`S{n_sessions_padded}`) verbatim from above. Anything else will be dropped. Return ONE JSON object.
+Final reminder: cite refs (`S001`-`S{n_sessions_padded}`) verbatim from above. Return ONE JSON object with both `observations` (operational) and `behavioral_patterns` (behavioral) populated.
 """
 
 
 def _compact_session(narr: dict, ref: str) -> dict:
     """Reduce a narrative to its high-signal fields for the synthesis prompt.
 
-    Aggressively tight — synthesis needs breadth across many sessions, not
-    depth on any one. Heavier fields (lesson_for_agent, notable, full
-    descriptions) are dropped here; a follow-up drilldown can re-load them.
+    Two simultaneous goals:
+      1. Operational signal — what's failing, where, how many sessions affected
+         (kept tight: friction descriptions truncated to ~120 chars, env
+         issues to ~160).
+      2. Behavioral signal — how *this person* prompts, decides, intervenes,
+         delegates, verifies (kept verbatim: lessons, decision retrospectives,
+         dead_ends, friction_signals, time/burst rhythm, delegation pattern).
 
-    `session_id` is intentionally OMITTED — the LLM only sees `ref` and is
+    `session_id` is intentionally omitted — the LLM only sees `ref` and is
     instructed to cite by ref. The validator translates refs back to
     session_ids.
     """
     tasks_compact = []
     for t in narr.get("tasks") or []:
+        diff = t.get("task_difficulty") or {}
         tasks_compact.append(
             {
-                "intent": (t.get("intent") or "")[:80],
+                "intent": (t.get("intent") or "")[:140],
                 "type": t.get("task_type"),
-                "difficulty": (t.get("task_difficulty") or {}).get("overall"),
+                "difficulty": diff.get("overall"),
+                "spec": diff.get("specification"),
+                "verify": diff.get("verification_ease"),
                 "outcome": t.get("outcome"),
+                "ttfvp": t.get("time_to_first_verified_progress"),
             }
         )
     friction_compact = []
@@ -160,39 +210,77 @@ def _compact_session(narr: dict, ref: str) -> dict:
                 "type": fm.get("type"),
                 "cat": fm.get("tool_category"),
                 "cost_events": fm.get("cost_events"),
-                "desc": (fm.get("description") or "")[:90],
+                "desc": (fm.get("description") or "")[:120],
             }
         )
     env_compact = [
-        (ei.get("description") or "")[:140]
+        (ei.get("description") or "")[:160]
         for ei in (narr.get("recurring_environmental_issues") or [])
     ]
+    # Behavioral fields kept verbatim — these are what synthesis needs to
+    # surface "how does this person actually work" patterns.
+    decisions_compact = []
+    for kd in narr.get("key_decisions") or []:
+        decisions_compact.append(
+            {
+                "decision": (kd.get("decision") or "")[:140],
+                "retro": (kd.get("retrospective") or "")[:200],
+            }
+        )
+    dead_ends_compact = []
+    for de in narr.get("dead_ends") or []:
+        dead_ends_compact.append(
+            {
+                "what": (de.get("what") or de.get("description") or "")[:140],
+                "why": (de.get("why_dead_end") or de.get("why") or "")[:200],
+                "cost_events": de.get("cost_events"),
+            }
+        )
+    ucme = narr.get("user_caught_model_errors") or {}
+    user_caught_examples = [
+        (e if isinstance(e, str) else (e.get("description") or ""))[:140]
+        for e in (ucme.get("examples") or [])
+    ][:3]
     return {
+        # Identity
         "ref": ref,
         "agent": narr.get("agent"),
         "project": narr.get("project_label"),
         "date": (narr.get("started_at") or "")[:10],
+        "weekday": narr.get("weekday"),
+        "tod": narr.get("time_of_day_buckets"),
         "model": narr.get("primary_model"),
+        # Rhythm + delegation (behavioral)
         "active_min": narr.get("active_minutes"),
         "bursts": narr.get("bursts"),
+        "primary_burst_min": narr.get("primary_burst_minutes"),
         "events": narr.get("event_count"),
+        "events_per_min": narr.get("events_per_active_minute"),
         "tool_calls": narr.get("tool_call_count"),
         "tool_err_rate": narr.get("tool_error_rate"),
-        "user_corr": (narr.get("user_friction_signals") or {}).get(
-            "explicit_corrections", 0
-        ),
-        "user_caught": (narr.get("user_caught_model_errors") or {}).get("count", 0),
+        "subagents": narr.get("subagent_count"),
+        "subagent_types": narr.get("subagent_types_spawned"),
+        # User behavior signals (verbatim)
+        "user_friction": narr.get("user_friction_signals"),
+        "user_caught_count": ucme.get("count"),
+        "user_caught_examples": user_caught_examples,
         "verification": narr.get("verification_completeness"),
         "prompt_q": narr.get("prompt_quality_signal"),
+        # Topical
         "topics": (narr.get("topics") or [])[:5],
         "ext_sys": narr.get("external_systems_touched") or [],
-        "goal": (narr.get("goal") or "")[:120],
+        "goal": (narr.get("goal") or "")[:200],
         "waste": narr.get("waste_signature"),
+        # Operational structure
         "tasks": tasks_compact,
         "friction": friction_compact,
         "env_issues": env_compact,
-        "counterfactual": (narr.get("counterfactual") or "")[:200],
-        "lesson_user": (narr.get("lesson_for_user") or "")[:160],
+        # Behavioral narrative — kept verbatim
+        "decisions": decisions_compact,
+        "dead_ends": dead_ends_compact,
+        "counterfactual": narr.get("counterfactual"),
+        "lesson_user": narr.get("lesson_for_user"),
+        "lesson_agent": narr.get("lesson_for_agent"),
     }
 
 
@@ -211,7 +299,12 @@ def _build_ref_map(narratives: list[dict]) -> tuple[dict[str, str], dict[str, st
 
 
 def _build_aggregate_block(narratives: list[dict]) -> str:
-    """Compute deterministic aggregates the LLM can reference without recounting."""
+    """Compute deterministic aggregates the LLM can reference without recounting.
+
+    Operational aggregates (counts of friction/env/etc.) plus behavioral
+    aggregates (rhythm, intervention rate, delegation balance, time-of-day
+    distribution) — both lenses get pre-computed numbers to ground claims.
+    """
     n = len(narratives)
     if not n:
         return "(no sessions)"
@@ -220,6 +313,7 @@ def _build_aggregate_block(narratives: list[dict]) -> str:
     projects = Counter(d.get("project_label") for d in narratives)
     verif = Counter(d.get("verification_completeness") for d in narratives)
     pq = Counter(d.get("prompt_quality_signal") for d in narratives)
+    weekdays = Counter(d.get("weekday") for d in narratives if d.get("weekday"))
     task_types: Counter = Counter()
     outcomes: Counter = Counter()
     diffs: Counter = Counter()
@@ -237,20 +331,69 @@ def _build_aggregate_block(narratives: list[dict]) -> str:
     )
     total_active = sum(d.get("active_minutes") or 0 for d in narratives)
 
+    # Behavioral aggregates
+    sessions_with_corrections = sum(
+        1 for d in narratives
+        if (d.get("user_friction_signals") or {}).get("explicit_corrections", 0) > 0
+    )
+    sessions_with_caught_errors = sum(
+        1 for d in narratives
+        if (d.get("user_caught_model_errors") or {}).get("count", 0) > 0
+    )
+    sessions_with_subagents = sum(
+        1 for d in narratives if (d.get("subagent_count") or 0) > 0
+    )
+    total_subagents = sum(d.get("subagent_count") or 0 for d in narratives)
+    sessions_with_dead_ends = sum(
+        1 for d in narratives if d.get("dead_ends")
+    )
+    total_dead_ends = sum(len(d.get("dead_ends") or []) for d in narratives)
+    # Time-of-day: aggregate the per-session bucket dicts
+    tod_total: Counter = Counter()
+    for d in narratives:
+        for bucket, count in (d.get("time_of_day_buckets") or {}).items():
+            tod_total[bucket] += count
+    # Session-length distribution by active minutes
+    length_bins = Counter()
+    for d in narratives:
+        m = d.get("active_minutes") or 0
+        if m < 5: length_bins["<5min"] += 1
+        elif m < 15: length_bins["5-15min"] += 1
+        elif m < 45: length_bins["15-45min"] += 1
+        elif m < 120: length_bins["45-120min"] += 1
+        else: length_bins["120min+"] += 1
+    # Burst-rhythm distribution: how many sessions are single-burst vs multi-burst
+    burst_dist = Counter()
+    for d in narratives:
+        b = d.get("bursts") or 0
+        if b == 1: burst_dist["1-burst"] += 1
+        elif b <= 3: burst_dist["2-3-burst"] += 1
+        else: burst_dist["4+-burst"] += 1
+
     lines = [
+        "## Operational",
         f"Total sessions: {n}",
         f"Agent split: {dict(agents)}",
         f"Total active minutes captured: {int(total_active):,}",
-        f"Total friction moments: {total_friction}",
-        f"Total recurring env issues: {total_env}",
-        f"Total user-caught model errors: {total_user_caught}",
+        f"Total friction moments: {total_friction}  (avg {total_friction/n:.1f}/session)",
+        f"Total recurring env issues: {total_env}  (avg {total_env/n:.1f}/session)",
+        f"Total dead-ends recorded: {total_dead_ends}  (in {sessions_with_dead_ends}/{n} sessions)",
         f"Waste signature distribution: {dict(waste_sigs.most_common())}",
         f"Task type distribution: {dict(task_types.most_common())}",
         f"Task outcomes: {dict(outcomes.most_common())}",
         f"Task difficulty: {dict(diffs.most_common())}",
-        f"Verification: {dict(verif.most_common())}",
-        f"Prompt quality: {dict(pq.most_common())}",
         f"Top 15 projects by session count: {dict(projects.most_common(15))}",
+        "",
+        "## Behavioral",
+        f"User-caught model errors: {total_user_caught} total in {sessions_with_caught_errors}/{n} sessions ({sessions_with_caught_errors/n*100:.0f}%)",
+        f"Sessions where user explicitly corrected the agent: {sessions_with_corrections}/{n} ({sessions_with_corrections/n*100:.0f}%)",
+        f"Subagent delegation: {sessions_with_subagents}/{n} sessions used subagents ({sessions_with_subagents/n*100:.0f}%); {total_subagents} total spawn",
+        f"Verification habit: {dict(verif.most_common())}",
+        f"Prompt quality (per-session signal): {dict(pq.most_common())}",
+        f"Session length distribution: {dict(length_bins.most_common())}",
+        f"Burst rhythm: {dict(burst_dist.most_common())}  (1-burst = single sustained flow, 4+ = highly fragmented)",
+        f"Time-of-day event distribution: {dict(tod_total.most_common())}",
+        f"Weekday distribution: {dict(weekdays.most_common())}",
     ]
     return "\n".join(lines)
 
@@ -370,6 +513,19 @@ def _validate(parsed: dict, ref_to_id: dict[str, str]) -> dict:
         if kept_refs:
             obs_clean.append(obs)
     parsed["observations"] = obs_clean
+
+    bp_clean: list[dict] = []
+    for bp in parsed.get("behavioral_patterns") or []:
+        if not isinstance(bp, dict):
+            continue
+        kept_refs, resolved, dropped = _resolve(bp.get("evidence_refs") or [])
+        dropped_total += dropped
+        bp["evidence_refs"] = kept_refs
+        bp["evidence_sessions"] = resolved
+        bp["supporting_count"] = len(kept_refs)
+        if kept_refs:
+            bp_clean.append(bp)
+    parsed["behavioral_patterns"] = bp_clean
 
     qw_clean: list[dict] = []
     for qw in parsed.get("quick_wins") or []:
