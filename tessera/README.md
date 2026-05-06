@@ -6,7 +6,7 @@ Reads your local Claude Code, Codex, and Gemini CLI session traces, builds rich 
 
 > 🔍 **[Live demo →](https://annasba07.github.io/tessera/)** (fictional data, click around to see what tessera produces — no install needed)
 
-![Tessera dashboard — Findings view](../docs/screenshot-findings.png)
+![Tessera dashboard — Findings view](https://raw.githubusercontent.com/annasba07/tessera/main/docs/screenshot-findings.png)
 
 Adding another agent CLI is one parser function; the narrative + synthesis layers are agent-agnostic.
 
