@@ -750,6 +750,37 @@ def _dashboard_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _enrich_outcomes_command(args: argparse.Namespace) -> int:
+    from .narratives.outcomes import enrich_directory
+
+    narratives_dir = Path(args.narratives_dir).expanduser()
+    if not narratives_dir.exists():
+        print(f"error: narratives dir not found: {narratives_dir}", file=sys.stderr)
+        return 1
+
+    print(
+        f"Enriching narratives in {narratives_dir} "
+        f"(gh={'off' if args.no_gh else 'on'}, force={args.force})...",
+        file=sys.stderr,
+    )
+    summary = enrich_directory(
+        narratives_dir,
+        use_gh=not args.no_gh,
+        force=args.force,
+        max_age_days=args.max_age_days,
+    )
+    print(
+        f"  {summary['enriched']} enriched, {summary['skipped_fresh']} skipped (fresh) "
+        f"of {summary['total']} total.",
+        file=sys.stderr,
+    )
+    if summary.get("signal_counts"):
+        print("  Outcome signal distribution:", file=sys.stderr)
+        for sig, count in summary["signal_counts"].items():
+            print(f"    {sig}: {count}", file=sys.stderr)
+    return 0
+
+
 def _eval_command(args: argparse.Namespace) -> int:
     from .narratives.eval import (
         evaluate_narratives,
@@ -1044,6 +1075,38 @@ def main(argv: list[str] | None = None) -> int:
     eval_parser.add_argument("--format", choices=["text", "json"], default="text")
     eval_parser.set_defaults(func=_eval_command)
 
+    # ---- enrich-outcomes ----
+    enrich = sub.add_parser(
+        "enrich-outcomes",
+        help="For each narrative, look up what actually happened to the work "
+        "(branch lifecycle, file churn, PR state via git + gh CLI). Idempotent; "
+        "writes outcome data inline. No LLM calls — fast and free.",
+    )
+    enrich.add_argument(
+        "--narratives-dir",
+        default="./narratives",
+        help="Directory of per-session narrative JSON files.",
+    )
+    enrich.add_argument(
+        "--no-gh",
+        action="store_true",
+        help="Skip GitHub PR lookups (git-only mode). Use if you don't have gh "
+        "installed/authenticated, or want a fully offline run.",
+    )
+    enrich.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-lookup even narratives that already have a recent outcome.",
+    )
+    enrich.add_argument(
+        "--max-age-days",
+        type=int,
+        default=7,
+        help="Skip narratives whose outcome was looked up more recently than "
+        "this many days ago (unless --force). Default 7.",
+    )
+    enrich.set_defaults(func=_enrich_outcomes_command)
+
     # ---- dashboard ----
     dash = sub.add_parser(
         "dashboard",
@@ -1072,8 +1135,15 @@ def main(argv: list[str] | None = None) -> int:
     dash.set_defaults(func=_dashboard_command)
 
     args = parser.parse_args(argv)
-    # Map --max-age-days into --lookback-days for the narrate flow (they're aliases)
-    if hasattr(args, "max_age_days") and args.max_age_days and not args.lookback_days:
+    # Map --max-age-days into --lookback-days for the narrate flow (they're aliases).
+    # Only relevant when the subcommand actually has both — newer subcommands
+    # (e.g. enrich-outcomes) reuse --max-age-days for unrelated meaning.
+    if (
+        hasattr(args, "max_age_days")
+        and hasattr(args, "lookback_days")
+        and args.max_age_days
+        and not args.lookback_days
+    ):
         args.lookback_days = args.max_age_days
     return args.func(args)
 

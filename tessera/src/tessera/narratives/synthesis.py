@@ -65,6 +65,19 @@ Behavioral observations should be:
 - **Actionable as a 1-week experiment**, not "be more careful"
 - **Surprising** — something the user wouldn't have guessed about themselves
 
+## Outcome data — use this as ground truth, not just intent
+
+Many sessions have an `outcome` field with what *actually shipped*: branch lifecycle, file churn in the next 14 days, and PR state (merged/open/closed, CI pass/fail, review approval). Outcome signals: `shipped_clean`, `shipped_with_followups`, `reverted`, `in_progress`, `abandoned`, `no_artifact`, `unavailable`.
+
+This changes how you should think about patterns:
+
+- **Friction without outcome is half the story.** A session with 200 events of friction that `shipped_clean` is very different from a session with 200 events of friction that was `reverted` or needed 5 fixup commits. Rank patterns by *value-delivered impact*, not just event count.
+- **Look for shipping-quality patterns**: which prompting styles, intervention timings, or workflows correlate with `shipped_clean` vs. `shipped_with_followups` vs. `reverted`?
+- **No-artifact sessions are not failures.** Many are exploration/debugging — judge them by whether the exploration was efficient, not by absence of a PR.
+- **Calibration check**: claimed task `outcome="completed"` from the per-session narrative + `outcome_signal="reverted"` or `shipped_with_followups` reveals over-claiming. If a session said it succeeded but the code came back with fix commits a week later, that's signal — surface it.
+
+When citing patterns that involve outcomes, prefer comparative claims grounded in real ship-quality: "in 8 sessions where you used X style, 6 shipped_clean and 2 shipped_with_followups; in 8 sessions with Y style, 2 shipped_clean, 4 shipped_with_followups, 2 reverted." That's much more useful than counting friction events alone.
+
 ## Behavioral patterns to actively look for
 
 Read across `lesson_for_user`, `lesson_for_agent`, `prompt_q`, `decisions[].retro`, `dead_ends`, `user_friction`, `user_caught_count/examples`, `verification`, `bursts`, `events_per_min`, `subagents`, `tod` (time-of-day), `weekday`:
@@ -241,6 +254,37 @@ def _compact_session(narr: dict, ref: str) -> dict:
         (e if isinstance(e, str) else (e.get("description") or ""))[:140]
         for e in (ucme.get("examples") or [])
     ][:3]
+    # Outcome (if enriched). Compact form — LLM only needs the signal label
+    # plus the fields that explain it, not full git logs.
+    outcome_compact: dict | None = None
+    outcome = narr.get("outcome") or {}
+    if outcome.get("outcome_signal"):
+        oc: dict = {"signal": outcome["outcome_signal"]}
+        churn = outcome.get("files_churn") or {}
+        if churn.get("commits_touching_files"):
+            oc["churn"] = {
+                "commits_in_14d": churn.get("commits_touching_files"),
+                "fixup": churn.get("fixup_shape_commits"),
+                "revert": churn.get("revert_commits"),
+            }
+        if outcome.get("prs"):
+            oc["prs"] = [
+                {
+                    "n": p.get("number"),
+                    "state": p.get("state"),
+                    "ci": p.get("ci_status"),
+                    "review": p.get("review_decision"),
+                }
+                for p in outcome["prs"][:3]
+            ]
+        b = outcome.get("branch") or {}
+        if b.get("merged_into") or b.get("commits_after_session"):
+            oc["branch"] = {
+                "merged_into": b.get("merged_into"),
+                "commits_after": b.get("commits_after_session"),
+            }
+        outcome_compact = oc
+
     return {
         # Identity
         "ref": ref,
@@ -250,6 +294,8 @@ def _compact_session(narr: dict, ref: str) -> dict:
         "weekday": narr.get("weekday"),
         "tod": narr.get("time_of_day_buckets"),
         "model": narr.get("primary_model"),
+        # Outcome — what actually happened to the work after the session
+        "outcome": outcome_compact,
         # Rhythm + delegation (behavioral)
         "active_min": narr.get("active_minutes"),
         "bursts": narr.get("bursts"),
@@ -331,6 +377,21 @@ def _build_aggregate_block(narratives: list[dict]) -> str:
     )
     total_active = sum(d.get("active_minutes") or 0 for d in narratives)
 
+    # Outcome aggregates (only for enriched narratives)
+    outcome_signals = Counter()
+    sessions_enriched = 0
+    fixup_total = 0
+    revert_total = 0
+    for d in narratives:
+        oc = d.get("outcome") or {}
+        sig = oc.get("outcome_signal")
+        if sig:
+            outcome_signals[sig] += 1
+            sessions_enriched += 1
+        churn = oc.get("files_churn") or {}
+        fixup_total += churn.get("fixup_shape_commits") or 0
+        revert_total += churn.get("revert_commits") or 0
+
     # Behavioral aggregates
     sessions_with_corrections = sum(
         1 for d in narratives
@@ -395,6 +456,16 @@ def _build_aggregate_block(narratives: list[dict]) -> str:
         f"Time-of-day event distribution: {dict(tod_total.most_common())}",
         f"Weekday distribution: {dict(weekdays.most_common())}",
     ]
+    if sessions_enriched:
+        lines += [
+            "",
+            "## Outcomes (enriched from git/gh after the fact)",
+            f"Sessions with outcome lookup: {sessions_enriched}/{n}",
+            f"Outcome signal distribution: {dict(outcome_signals.most_common())}",
+            f"Total fixup-shape commits in 14d after sessions: {fixup_total}",
+            f"Total revert commits in 14d after sessions: {revert_total}",
+            "(Signals: shipped_clean = merged, no follow-ups; shipped_with_followups = merged but needed fix/hotfix commits; reverted = explicit revert detected; in_progress = still landing commits or open PR; abandoned = closed unmerged or branch deleted; no_artifact = exploration/debug session, no PR/branch.)",
+        ]
     return "\n".join(lines)
 
 

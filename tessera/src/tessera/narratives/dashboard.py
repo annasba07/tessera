@@ -1734,6 +1734,23 @@ table.sessions td .agent-pill {
   letter-spacing: 0.04em;
 }
 
+.outcome-pill {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 8px;
+  letter-spacing: 0.04em;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.outcome-pill.out-shipped_clean        { background: #e2eee0; color: #2d4a26; border: 1px solid #c6dac1; }
+.outcome-pill.out-shipped_with_followups { background: #f4ecd8; color: #6b4f1d; border: 1px solid #e0d3a8; }
+.outcome-pill.out-reverted             { background: #f4dad5; color: #7a2a1a; border: 1px solid #e6b6ab; }
+.outcome-pill.out-in_progress          { background: #e6ecef; color: #34495a; border: 1px solid #cad6dd; }
+.outcome-pill.out-abandoned            { background: #ece4d6; color: #6b5a3a; border: 1px solid #d8c8a8; }
+.outcome-pill.out-no_artifact          { background: #f1ede0; color: #7c7568; border: 1px solid #e2dcc6; }
+.outcome-pill.out-unavailable          { background: transparent; color: #b3ad9f; border: 1px dashed #d6d0c2; }
+
 tr.detail-row { display: none; }
 tr.detail-row.open { display: table-row; }
 tr.detail-row td {
@@ -2075,9 +2092,13 @@ EXPLORE_JS = r"""
           ? '<span class="pill">' + esc(s.waste_signature) + '</span>' : '') + '</td>' +
         '<td class="num">' + (s.friction_count || 0) + '</td>' +
         '<td class="num">' + (s.user_caught || 0) + '</td>' +
+        '<td>' + (s.outcome_signal
+          ? '<span class="outcome-pill out-' + esc(s.outcome_signal) + '">' +
+            esc(s.outcome_signal.replace(/_/g, ' ')) + '</span>'
+          : '') + '</td>' +
         '</tr>' +
         '<tr class="detail-row" data-sid="' + esc(s.session_id) + '">' +
-        '<td colspan="10"></td></tr>';
+        '<td colspan="11"></td></tr>';
     });
     tbody.innerHTML = html;
     summary.textContent = filtered.length + ' / ' + sessions.length + ' sessions';
@@ -2152,6 +2173,34 @@ EXPLORE_JS = r"""
         '<span class="val">' + esc(kv[1] == null ? '—' : kv[1]) + '</span></div>';
     }).join('');
 
+    // Outcome block — what happened to the work after the session
+    let outcomeHtml = '';
+    if (s.outcome) {
+      const o = s.outcome;
+      const lines = ['<div class="item"><strong>signal:</strong> <span class="outcome-pill out-' +
+        esc(o.signal) + '">' + esc(o.signal.replace(/_/g, ' ')) + '</span></div>'];
+      if (o.prs && o.prs.length) {
+        const prHtml = o.prs.map(function(p) {
+          return '<div class="item"><strong>PR #' + p.n + '</strong> ' +
+            '<span class="small">state=' + esc(p.state || '?') + ' · ci=' + esc(p.ci || '?') +
+            ' · review=' + esc(p.review || '?') + '</span></div>';
+        }).join('');
+        lines.push(prHtml);
+      }
+      if (o.churn) {
+        lines.push('<div class="item"><strong>14-day churn</strong> ' +
+          '<span class="small">' + (o.churn.commits_in_14d || 0) + ' commits touching files (' +
+          (o.churn.fixup || 0) + ' fixup-shape, ' + (o.churn.revert || 0) + ' revert)</span></div>');
+      }
+      if (o.branch) {
+        lines.push('<div class="item"><strong>branch</strong> ' +
+          '<span class="small">' + (o.branch.merged_into ? 'merged → ' + esc(o.branch.merged_into) : '') +
+          (o.branch.commits_after ? ' · ' + o.branch.commits_after + ' commits after session' : '') +
+          '</span></div>');
+      }
+      outcomeHtml = '<h4>Outcome</h4>' + lines.join('');
+    }
+
     return '<div class="session-detail">' +
       '<h3>' + esc(s.goal || 'Session') + '</h3>' +
       '<div class="sd-meta">' + esc(s.session_id) + '</div>' +
@@ -2163,6 +2212,7 @@ EXPLORE_JS = r"""
       (deadends ? '<h4>Dead ends</h4>' + deadends : '') +
       (env ? '<h4>Recurring environmental issues</h4>' + env : '') +
       (ucme ? '<h4>User-caught model errors</h4>' + ucme : '') +
+      outcomeHtml +
       counterfactual + lessonUser + lessonAgent + notable + topics +
       '</div>' +
       '<div><div class="stats-card">' + statsHtml + '</div></div>' +
@@ -2472,9 +2522,13 @@ COMBINED_JS = r"""
           ? '<span class="pill">' + esc(s.waste_signature) + '</span>' : '') + '</td>' +
         '<td class="num">' + (s.friction_count || 0) + '</td>' +
         '<td class="num">' + (s.user_caught || 0) + '</td>' +
+        '<td>' + (s.outcome_signal
+          ? '<span class="outcome-pill out-' + esc(s.outcome_signal) + '">' +
+            esc(s.outcome_signal.replace(/_/g, ' ')) + '</span>'
+          : '') + '</td>' +
         '</tr>' +
         '<tr class="detail-row" data-sid="' + esc(s.session_id) + '">' +
-        '<td colspan="10"></td></tr>';
+        '<td colspan="11"></td></tr>';
     });
     tbody.innerHTML = html;
     summary.textContent = filtered.length + ' / ' + sessions.length + ' sessions';
@@ -2770,7 +2824,41 @@ def _expanded_session_for_explore(n: dict) -> dict:
         "notable": (n.get("notable") or "")[:300],
         "lesson_user": (n.get("lesson_for_user") or "")[:240],
         "lesson_agent": (n.get("lesson_for_agent") or "")[:240],
+        "outcome_signal": (n.get("outcome") or {}).get("outcome_signal"),
+        "outcome": _compact_outcome_for_session(n.get("outcome") or {}),
     }
+
+
+def _compact_outcome_for_session(outcome: dict) -> dict | None:
+    """Subset of the outcome dict suitable for embedding in the per-session
+    JSON payload that ships to the browser. Drops verbose churn detail."""
+    if not outcome.get("outcome_signal"):
+        return None
+    out: dict = {"signal": outcome["outcome_signal"]}
+    churn = outcome.get("files_churn") or {}
+    if churn.get("commits_touching_files"):
+        out["churn"] = {
+            "commits_in_14d": churn.get("commits_touching_files"),
+            "fixup": churn.get("fixup_shape_commits", 0),
+            "revert": churn.get("revert_commits", 0),
+        }
+    if outcome.get("prs"):
+        out["prs"] = [
+            {
+                "n": p.get("number"),
+                "state": p.get("state"),
+                "ci": p.get("ci_status"),
+                "review": p.get("review_decision"),
+            }
+            for p in outcome["prs"][:3]
+        ]
+    branch = outcome.get("branch") or {}
+    if branch.get("merged_into") or branch.get("commits_after_session"):
+        out["branch"] = {
+            "merged_into": branch.get("merged_into"),
+            "commits_after": branch.get("commits_after_session"),
+        }
+    return out
 
 
 def _aggregate_env_issues(narratives: list[dict]) -> list[dict]:
@@ -2916,6 +3004,7 @@ def _render_sessions_tab(narratives: list[dict]) -> str:
         '<th data-sort="waste_signature">Waste</th>'
         '<th data-sort="friction_count">Friction</th>'
         '<th data-sort="user_caught">User caught</th>'
+        '<th data-sort="outcome_signal">Outcome</th>'
     )
 
     return f"""
