@@ -1253,6 +1253,65 @@ def _render_timeline(timeline: dict) -> str:
     )
 
 
+def _render_experiments_block() -> str:
+    """Render active + recently-graduated self-experiments. Empty string
+    if the experiments store is unset or empty (silent first-time users).
+    """
+    try:
+        from ..experiments import ExperimentStore
+    except ImportError:
+        return ""
+    store = ExperimentStore()
+    active = store.list("active")
+    graduated = store.list("graduated")
+    not_tried = store.list("not_tried")
+    if not (active or graduated or not_tried):
+        return ""
+
+    def _exp_card(exp, status_label: str, status_class: str) -> str:
+        last_eval = exp.evaluations[-1] if exp.evaluations else None
+        eval_html = ""
+        if last_eval:
+            adherence = last_eval.get("adherence", "?")
+            effect = last_eval.get("effect", "?")
+            eval_html = (
+                f'<div class="exp-eval">'
+                f'<span class="exp-meta-pill">adherence: {_esc(adherence)}</span>'
+                f'<span class="exp-meta-pill">effect: {_esc(effect)}</span>'
+                f'<span class="exp-meta">evaluated {_esc(last_eval.get("evaluated_at","")[:10])}</span>'
+                f'</div>'
+            )
+        return (
+            f'<article class="experiment exp-{status_class}">'
+            f'<div class="exp-head">'
+            f'<span class="exp-status">{status_label}</span>'
+            f'<span class="exp-title">{_esc(exp.title)}</span>'
+            f'<span class="exp-dim">{_esc(exp.dimension or "")}</span>'
+            f'</div>'
+            f'<p class="exp-text">{_esc(exp.experiment_text)}</p>'
+            f'<div class="exp-meta">started {_esc(exp.started_at[:10])} · {len(exp.evaluations)} eval(s)</div>'
+            f'{eval_html}'
+            f'</article>'
+        )
+
+    cards = []
+    for e in graduated:
+        cards.append(_exp_card(e, "graduated", "graduated"))
+    for e in active:
+        cards.append(_exp_card(e, "active", "active"))
+    for e in not_tried:
+        cards.append(_exp_card(e, "not tried", "not_tried"))
+
+    total = len(active) + len(graduated) + len(not_tried)
+    return (
+        '<section class="block experiments-block">'
+        f'<h2 class="section-title">Active experiments <span class="count">({total})</span> '
+        '<span class="section-sub">— things you committed to by rating a behavioral pattern [useful]</span></h2>'
+        f'{"".join(cards)}'
+        '</section>'
+    )
+
+
 def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
     """The Findings view — what was previously the synthesis page."""
     headline = synthesis.get("headline") or "Cross-session synthesis"
@@ -1262,6 +1321,11 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
     qw_list = synthesis.get("quick_wins") or []
     pp_list = synthesis.get("per_project") or []
     meta = synthesis.get("meta", {})
+
+    # Active self-experiments — pulled from the live experiments store, not
+    # from the synthesis output. This makes the section reflect the user's
+    # current commitments even if the synthesis is days old.
+    experiments_html = _render_experiments_block()
 
     total_sessions = len(narratives) or meta.get("input_sessions") or 0
     total_active = sum(n.get("active_minutes") or 0 for n in narratives)
@@ -1351,6 +1415,7 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
 <section class="view" data-view="findings">
   <h1 class="headline">{_esc(headline)}</h1>
   {callout_html}
+  {experiments_html}
   {timeline_html}
   {aggregate_html}
   {obs_block}
@@ -1732,6 +1797,33 @@ table.sessions td .agent-pill {
   color: var(--ink-soft);
   border-radius: 8px;
   letter-spacing: 0.04em;
+}
+
+.experiments-block .experiment {
+  margin: 14px 0;
+  padding: 14px 18px;
+  background: #fbf6e8;
+  border-left: 3px solid var(--warm-soft);
+  border-radius: 0 6px 6px 0;
+}
+.experiments-block .experiment.exp-graduated { border-left-color: var(--leaf); background: #f1f6ee; }
+.experiments-block .experiment.exp-not_tried { border-left-color: var(--ink-mute); background: #f5f3ec; opacity: 0.85; }
+.experiments-block .exp-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.experiments-block .exp-status {
+  font-family: var(--mono); font-size: 10px; text-transform: uppercase;
+  padding: 1px 7px; background: var(--warm); color: #fff; border-radius: 8px;
+  letter-spacing: 0.06em;
+}
+.experiments-block .experiment.exp-graduated .exp-status { background: var(--leaf); }
+.experiments-block .experiment.exp-not_tried .exp-status { background: var(--ink-mute); }
+.experiments-block .exp-title { font-family: var(--serif); font-size: 16px; color: var(--ink); font-weight: 600; }
+.experiments-block .exp-dim { font-family: var(--mono); font-size: 10px; color: var(--ink-mute); margin-left: auto; }
+.experiments-block .exp-text { color: var(--ink-soft); font-size: 14px; margin: 8px 0; }
+.experiments-block .exp-meta { font-family: var(--mono); font-size: 11px; color: var(--ink-mute); }
+.experiments-block .exp-eval { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.experiments-block .exp-meta-pill {
+  font-family: var(--mono); font-size: 10px; padding: 1px 7px;
+  border: 1px solid var(--line-strong); border-radius: 8px; color: var(--ink-soft);
 }
 
 .outcome-pill {

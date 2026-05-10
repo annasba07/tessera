@@ -180,6 +180,14 @@ def _run_command(args: argparse.Namespace) -> int:
                 f"       → including {args.prior_runs} prior runs as context.",
                 file=sys.stderr,
             )
+    # Feed active experiments into prior context too — so synthesis doesn't
+    # re-surface a pattern the user is already actively experimenting on.
+    from .experiments import ExperimentStore, summarize_for_prompt as exp_summary
+
+    exp_text = exp_summary(ExperimentStore())
+    if exp_text:
+        prior_context = (prior_context or "") + "\n\n## Active self-experiments\n" + exp_text
+        print("       → including active experiments as context.", file=sys.stderr)
 
     print(f"[4/4] Cross-session synthesis via {args.model}...", file=sys.stderr)
     t0 = time.monotonic()
@@ -705,11 +713,78 @@ def _rate_import_command(args: argparse.Namespace) -> int:
 
     store.save_ratings(slug, cleaned)
     summary = Counter(c["rating"] for c in cleaned)
-    print(
-        f"→ imported {len(cleaned)} ratings into run {slug}  ({dict(summary)})",
-        file=sys.stderr,
-    )
+
+    # Self-experiment registration: any `useful` rating that resolves to a
+    # behavioral_pattern in the rated run becomes an active experiment.
+    # Lookup is by key (stable across runs) — works even if the user rates
+    # in the dashboard without ever touching observation indices.
+    from .experiments import ExperimentStore, register_from_ratings
+
+    run_payload = store.load_run(slug) or {}
+    behavioral_patterns = run_payload.get("behavioral_patterns") or []
+    registered = []
+    if behavioral_patterns:
+        registered = register_from_ratings(
+            cleaned, behavioral_patterns, slug, ExperimentStore()
+        )
+
+    msg = f"→ imported {len(cleaned)} ratings into run {slug}  ({dict(summary)})"
+    if registered:
+        msg += f"\n→ registered {len(registered)} new experiment(s) from useful behavioral_patterns:"
+        for exp in registered:
+            msg += f"\n    · {exp.title}"
+    print(msg, file=sys.stderr)
     return 0
+
+
+def _experiments_command(args: argparse.Namespace) -> int:
+    """List or operate on tracked experiments."""
+    from .experiments import ExperimentStore
+
+    store = (
+        ExperimentStore(data_dir=Path(args.data_dir).expanduser())
+        if args.data_dir
+        else ExperimentStore()
+    )
+
+    if args.action == "list":
+        statuses = ("active", "graduated", "inconclusive", "not_tried")
+        any_shown = False
+        for status in statuses:
+            bucket = store.list(status=status)  # type: ignore[arg-type]
+            if not bucket:
+                continue
+            any_shown = True
+            print(f"\n{status.upper()} ({len(bucket)})", file=sys.stderr)
+            for exp in bucket:
+                print(
+                    f"  · [{exp.dimension or '—':<20}] {exp.title}"
+                    f"  (started {exp.started_at[:10]}, {len(exp.evaluations)} eval{'s' if len(exp.evaluations)!=1 else ''})",
+                    file=sys.stderr,
+                )
+        if not any_shown:
+            print(
+                "no experiments tracked yet — rate a behavioral_pattern as "
+                "[useful] in the dashboard to register one.",
+                file=sys.stderr,
+            )
+        return 0
+
+    if args.action == "show":
+        if not args.id:
+            print("error: --id required for `show`", file=sys.stderr)
+            return 1
+        exp = store.get(args.id)
+        if not exp:
+            print(f"error: no experiment with id {args.id!r}", file=sys.stderr)
+            return 1
+        from dataclasses import asdict
+
+        print(json.dumps(asdict(exp), indent=2, ensure_ascii=False))
+        return 0
+
+    print(f"error: unknown action {args.action!r}", file=sys.stderr)
+    return 1
 
 
 def _dashboard_command(args: argparse.Namespace) -> int:
@@ -837,6 +912,14 @@ def _synthesize_command(args: argparse.Namespace) -> int:
                 f"       → including {args.prior_runs} prior runs as context.",
                 file=sys.stderr,
             )
+    # Feed active experiments into prior context too — so synthesis doesn't
+    # re-surface a pattern the user is already actively experimenting on.
+    from .experiments import ExperimentStore, summarize_for_prompt as exp_summary
+
+    exp_text = exp_summary(ExperimentStore())
+    if exp_text:
+        prior_context = (prior_context or "") + "\n\n## Active self-experiments\n" + exp_text
+        print("       → including active experiments as context.", file=sys.stderr)
 
     print(f"[2/2] Asking {args.model} for cross-session synthesis...", file=sys.stderr)
     t0 = time.monotonic()
@@ -1074,6 +1157,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     eval_parser.add_argument("--format", choices=["text", "json"], default="text")
     eval_parser.set_defaults(func=_eval_command)
+
+    # ---- experiments ----
+    exp = sub.add_parser(
+        "experiments",
+        help="List or inspect self-experiments (auto-registered when you rate "
+        "a behavioral_pattern as [useful] in the dashboard).",
+    )
+    exp.add_argument(
+        "action",
+        nargs="?",
+        choices=["list", "show"],
+        default="list",
+        help="What to do. Default: list.",
+    )
+    exp.add_argument("--id", default=None, help="Experiment id (required for `show`).")
+    exp.add_argument(
+        "--data-dir",
+        default=None,
+        help="Override the experiments data dir. Default ~/.config/tessera/experiments.",
+    )
+    exp.set_defaults(func=_experiments_command)
 
     # ---- enrich-outcomes ----
     enrich = sub.add_parser(
