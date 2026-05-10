@@ -1253,6 +1253,108 @@ def _render_timeline(timeline: dict) -> str:
     )
 
 
+def _render_changelog_block(synthesis: dict) -> str:
+    """Render the 'Since last run' diff at the top of Findings.
+
+    Empty when there's no prior run in history (first-time users).
+    Pulls from the live HistoryStore so the diff stays accurate even if
+    the user re-renders the dashboard later without re-synthesizing.
+    """
+    try:
+        from ..changelog import changelog_for_current
+        from ..history import HistoryStore
+    except ImportError:
+        return ""
+
+    try:
+        cl = changelog_for_current(synthesis, HistoryStore())
+    except Exception:
+        return ""
+    if not cl.get("compared"):
+        return ""
+
+    s = cl.get("summary", {})
+    # Don't render if literally nothing changed — avoid Monday-morning noise.
+    interesting_keys = (
+        "obs_new", "obs_escalating", "obs_improving", "obs_resolved", "obs_regressed",
+        "bp_new", "bp_escalating", "bp_improving", "bp_resolved", "bp_regressed",
+    )
+    if all(s.get(k, 0) == 0 for k in interesting_keys):
+        return ""
+
+    against = (cl.get("compared_against_date") or "")[:10]
+
+    def _bullet_list(items: list[dict], show_delta: bool = False) -> str:
+        if not items:
+            return ""
+        out = []
+        for item in items:
+            title = _esc(item.get("title") or "")
+            cat = item.get("category") or ""
+            cat_chip = f'<span class="cl-cat">{_esc(cat)}</span>' if cat else ""
+            count_label = ""
+            if show_delta and "delta" in item:
+                d = item["delta"]
+                arrow = "▲" if d > 0 else ("▼" if d < 0 else "·")
+                count_label = (
+                    f'<span class="cl-delta">'
+                    f'{arrow} {item["previous_count"]}→{item["current_count"]} '
+                    f'({"+" if d > 0 else ""}{d})'
+                    f'</span>'
+                )
+            elif "current_count" in item and item["current_count"]:
+                count_label = f'<span class="cl-delta">{item["current_count"]}s</span>'
+            elif "previous_count" in item:
+                count_label = f'<span class="cl-delta">was {item["previous_count"]}s</span>'
+            out.append(f'<li>{title} {cat_chip} {count_label}</li>')
+        return "<ul>" + "".join(out) + "</ul>"
+
+    def _bucket(label: str, color_class: str, obs_items: list, bp_items: list, show_delta: bool = False) -> str:
+        if not (obs_items or bp_items):
+            return ""
+        body = ""
+        if obs_items:
+            body += '<div class="cl-subhead">operational</div>' + _bullet_list(obs_items, show_delta)
+        if bp_items:
+            body += '<div class="cl-subhead">behavioral</div>' + _bullet_list(bp_items, show_delta)
+        return (
+            f'<div class="cl-bucket cl-{color_class}">'
+            f'<div class="cl-bucket-label">{label}</div>'
+            f'{body}'
+            f'</div>'
+        )
+
+    obs = cl["observations"]
+    bp = cl["behavioral_patterns"]
+
+    buckets_html = (
+        _bucket("New since last run", "new", obs["new"], bp["new"])
+        + _bucket("Escalating", "escalating", obs["escalating"], bp["escalating"], show_delta=True)
+        + _bucket("Regressed (was resolved, now back)", "regressed", obs["regressed"], bp["regressed"])
+        + _bucket("Improving", "improving", obs["improving"], bp["improving"], show_delta=True)
+        + _bucket("Resolved (gone since last run — close the loop?)", "resolved", obs["resolved"], bp["resolved"])
+    )
+
+    headline_parts = []
+    if s.get("obs_new") or s.get("bp_new"):
+        headline_parts.append(f'{s.get("obs_new",0) + s.get("bp_new",0)} new')
+    if s.get("obs_escalating") or s.get("bp_escalating"):
+        headline_parts.append(f'{s.get("obs_escalating",0) + s.get("bp_escalating",0)} escalating')
+    if s.get("obs_resolved") or s.get("bp_resolved"):
+        headline_parts.append(f'{s.get("obs_resolved",0) + s.get("bp_resolved",0)} resolved')
+    if s.get("obs_regressed") or s.get("bp_regressed"):
+        headline_parts.append(f'{s.get("obs_regressed",0) + s.get("bp_regressed",0)} regressed')
+    headline_str = " · ".join(headline_parts) if headline_parts else "no major changes"
+
+    return (
+        '<section class="block changelog-block">'
+        f'<h2 class="section-title">Since last run <span class="count">({_esc(against)})</span> '
+        f'<span class="section-sub">— {_esc(headline_str)}</span></h2>'
+        f'{buckets_html}'
+        '</section>'
+    )
+
+
 def _render_experiments_block() -> str:
     """Render active + recently-graduated self-experiments. Empty string
     if the experiments store is unset or empty (silent first-time users).
@@ -1326,6 +1428,9 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
     # from the synthesis output. This makes the section reflect the user's
     # current commitments even if the synthesis is days old.
     experiments_html = _render_experiments_block()
+
+    # Changelog: diff this run against the most recent prior run in history.
+    changelog_html = _render_changelog_block(synthesis)
 
     total_sessions = len(narratives) or meta.get("input_sessions") or 0
     total_active = sum(n.get("active_minutes") or 0 for n in narratives)
@@ -1415,6 +1520,7 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
 <section class="view" data-view="findings">
   <h1 class="headline">{_esc(headline)}</h1>
   {callout_html}
+  {changelog_html}
   {experiments_html}
   {timeline_html}
   {aggregate_html}
@@ -1797,6 +1903,45 @@ table.sessions td .agent-pill {
   color: var(--ink-soft);
   border-radius: 8px;
   letter-spacing: 0.04em;
+}
+
+.changelog-block { margin-top: 24px; }
+.changelog-block .cl-bucket {
+  margin: 12px 0;
+  padding: 10px 16px;
+  border-left: 3px solid var(--line-strong);
+  background: #fbfaf3;
+  border-radius: 0 4px 4px 0;
+}
+.changelog-block .cl-bucket.cl-new        { border-left-color: var(--warm); background: #faf3e8; }
+.changelog-block .cl-bucket.cl-escalating { border-left-color: var(--rust); background: #faecea; }
+.changelog-block .cl-bucket.cl-regressed  { border-left-color: var(--rust); background: #faecea; }
+.changelog-block .cl-bucket.cl-improving  { border-left-color: var(--leaf); background: #f1f6ee; }
+.changelog-block .cl-bucket.cl-resolved   { border-left-color: var(--leaf); background: #f1f6ee; opacity: 0.95; }
+.changelog-block .cl-bucket-label {
+  font-family: var(--mono); font-size: 11px; font-weight: 600;
+  color: var(--ink-soft); letter-spacing: 0.04em; text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.changelog-block .cl-subhead {
+  font-family: var(--mono); font-size: 10px; color: var(--ink-mute);
+  margin-top: 6px; letter-spacing: 0.04em;
+}
+.changelog-block ul {
+  list-style: none; padding: 0; margin: 4px 0;
+}
+.changelog-block li {
+  padding: 2px 0;
+  font-size: 14px;
+  color: var(--ink);
+}
+.changelog-block .cl-cat {
+  font-family: var(--mono); font-size: 10px; color: var(--ink-mute);
+  margin-left: 6px;
+}
+.changelog-block .cl-delta {
+  font-family: var(--mono); font-size: 10px; color: var(--warm);
+  margin-left: 6px;
 }
 
 .experiments-block .experiment {

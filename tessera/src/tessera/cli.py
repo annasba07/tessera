@@ -737,6 +737,30 @@ def _rate_import_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _changelog_command(args: argparse.Namespace) -> int:
+    from .changelog import changelog_for_current, render_changelog_text
+    from .history import HistoryStore
+
+    synth_path = Path(args.synthesis).expanduser()
+    if not synth_path.exists():
+        print(f"error: synthesis file not found: {synth_path}", file=sys.stderr)
+        return 1
+    try:
+        synthesis = json.loads(synth_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        print(f"error: invalid synthesis JSON: {exc}", file=sys.stderr)
+        return 1
+
+    history = HistoryStore(Path(args.history_dir).expanduser())
+    cl = changelog_for_current(synthesis, history)
+
+    if args.format == "json":
+        print(json.dumps(cl, indent=2, ensure_ascii=False))
+    else:
+        print(render_changelog_text(cl))
+    return 0
+
+
 def _experiments_command(args: argparse.Namespace) -> int:
     """List or operate on tracked experiments."""
     from .experiments import ExperimentStore
@@ -1157,6 +1181,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     eval_parser.add_argument("--format", choices=["text", "json"], default="text")
     eval_parser.set_defaults(func=_eval_command)
+
+    # ---- changelog ----
+    changelog = sub.add_parser(
+        "changelog",
+        help="Show what changed since the last run — new, escalating, "
+        "improving, resolved, regressed observations and behavioral patterns. "
+        "Pure-data diff, no LLM call.",
+    )
+    changelog.add_argument(
+        "--synthesis",
+        default="./synthesis.json",
+        help="Current synthesis to diff against history.",
+    )
+    changelog.add_argument(
+        "--history-dir",
+        default=str(DEFAULT_DATA_DIR),
+        help=f"History store. Default {DEFAULT_DATA_DIR}.",
+    )
+    changelog.add_argument("--format", choices=["text", "json"], default="text")
+    changelog.set_defaults(func=_changelog_command)
 
     # ---- experiments ----
     exp = sub.add_parser(
