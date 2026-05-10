@@ -52,10 +52,15 @@ _PR_NUM_RE = re.compile(r"(?:^|\W)#(\d{1,5})\b")
 # Outcome signal taxonomy — one per narrative.
 SIGNAL_SHIPPED_CLEAN = "shipped_clean"
 SIGNAL_SHIPPED_WITH_FOLLOWUPS = "shipped_with_followups"
+SIGNAL_SHIPPED_DIRECT = "shipped_direct"  # trunk commit, no PR — common for solo work
 SIGNAL_REVERTED = "reverted"
 SIGNAL_ABANDONED = "abandoned"
 SIGNAL_IN_PROGRESS = "in_progress"
-SIGNAL_NO_ARTIFACT = "no_artifact"
+# Replacements for the old, too-broad "no_artifact" signal:
+SIGNAL_EXPLORATION = "exploration"  # no files touched — chat/research/Q&A
+SIGNAL_NON_REPO = "non_repo"        # work outside any git repo (/tmp, scratch dirs)
+SIGNAL_UNSHIPPED = "unshipped"      # touched files, no commits in window (drafts/abandoned)
+SIGNAL_NO_ARTIFACT = "no_artifact"  # legacy fallback — kept for back-compat
 SIGNAL_UNAVAILABLE = "unavailable"
 
 
@@ -151,10 +156,14 @@ def lookup_branch_outcome(
     """Inspect what happened to `branch` after the session ended.
 
     Returns a dict with branch_state and commits_after_session — empty dict
-    if the path isn't a git repo or the branch is missing. We treat 'main',
-    'master', and detached HEAD as 'long-lived' (no abandon signal).
+    if the path isn't a git repo. Trunk branches (main/master/HEAD) skip
+    the merge/abandon checks (those don't apply) but other detection still
+    runs via lookup_trunk_commits below.
     """
     if not branch or branch in ("HEAD", "main", "master") or not project_path.is_dir():
+        # Note: trunk-branch ship signal is captured by lookup_trunk_commits
+        # rather than this function — branch-state semantics don't apply to
+        # trunks (there's nothing to merge or abandon).
         return {}
     rc, _ = _run_git(project_path, "rev-parse", "--git-dir")
     if rc != 0:
@@ -279,6 +288,76 @@ def lookup_files_churn(
     }
 
 
+def lookup_trunk_commits(
+    project_path: Path,
+    files: list[str],
+    session_end: datetime | None,
+    *,
+    pre_window_days: int = 1,
+    post_window_days: int = WINDOW_DAYS,
+) -> dict[str, Any]:
+    """Detect 'shipped to trunk without a PR' work — common for solo devs.
+
+    Looks at main/master for commits in [end - pre_window, end + post_window]
+    that touch any of the session's files. This is the ship signal for:
+      - scripts committed directly to main
+      - memory file edits (CLAUDE.md, AGENTS.md)
+      - skill / settings.json edits in .claude/
+      - infra commits (render.yaml, supabase migrations, etc.)
+      - small fixes the user makes-and-commits without branching
+
+    Without this, sessions where the user works directly on main get
+    bucketed as no_artifact even when real work shipped.
+
+    Returns counts and sample subjects; empty dict when no signal.
+    """
+    if not files or not session_end or not project_path.is_dir():
+        return {}
+    rc, _ = _run_git(project_path, "rev-parse", "--git-dir")
+    if rc != 0:
+        return {}
+
+    since = (session_end - timedelta(days=pre_window_days)).isoformat()
+    until = (session_end + timedelta(days=post_window_days)).isoformat()
+    files_to_check = files[:25]
+
+    # Try local main, then origin/main, then master fallbacks.
+    for ref in ("main", "origin/main", "master", "origin/master"):
+        rc, _ = _run_git(project_path, "rev-parse", "--verify", "--quiet", ref)
+        if rc != 0:
+            continue
+        rc, log = _run_git(
+            project_path,
+            "log",
+            ref,
+            f"--since={since}",
+            f"--until={until}",
+            "--format=%H|%ct|%s",
+            "--",
+            *files_to_check,
+        )
+        if rc != 0:
+            continue
+        commits = []
+        for line in log.strip().splitlines():
+            parts = line.split("|", 2)
+            if len(parts) == 3:
+                commits.append(
+                    {"sha": parts[0], "ts": int(parts[1]), "subject": parts[2]}
+                )
+        if commits:
+            return {
+                "ref": ref,
+                "files_checked": len(files_to_check),
+                "window_days_post": post_window_days,
+                "trunk_commits_in_window": len(commits),
+                "trunk_commit_subjects": [c["subject"][:140] for c in commits[:8]],
+            }
+        # Even if no commits, we found the trunk — stop iterating
+        return {}
+    return {}
+
+
 def lookup_pr_outcome(owner: str, name: str, pr_number: int) -> dict[str, Any]:
     """Hit `gh pr view` to capture state. Empty dict on any failure."""
     rc, payload = _run_gh(
@@ -376,7 +455,18 @@ def _summarize_signal(outcome: dict) -> str:
     if branch.get("commits_after_session", 0) > 0:
         return SIGNAL_IN_PROGRESS
 
-    return SIGNAL_NO_ARTIFACT
+    # Trunk-direct ship signal — solo-style work that went straight to
+    # main/master without a PR. Distinguish followup vs. clean by churn.
+    trunk = outcome.get("trunk_commits") or {}
+    if trunk.get("trunk_commits_in_window", 0) > 0:
+        if churn.get("fixup_shape_commits", 0) > 0:
+            return SIGNAL_SHIPPED_WITH_FOLLOWUPS
+        return SIGNAL_SHIPPED_DIRECT
+
+    # Touched files but nothing landed in trunk in the window — could be a
+    # draft, abandoned work, or work still in progress on a feature branch
+    # that we couldn't trace. More honest than 'no_artifact'.
+    return SIGNAL_UNSHIPPED
 
 
 def enrich_narrative_with_outcome(
@@ -402,6 +492,27 @@ def enrich_narrative_with_outcome(
         out["project_path"] = project_path_str
         return out
 
+    # Cheap pre-checks that produce honest "doesn't apply" signals instead
+    # of bucketing everything as no_artifact. Each maps to a distinct signal
+    # so users can tell exploration ≠ shipped-but-no-record ≠ scratch-work.
+    rc, _ = _run_git(project_path, "rev-parse", "--git-dir")
+    is_repo = rc == 0
+    if not is_repo:
+        out["outcome_signal"] = SIGNAL_NON_REPO
+        out["reason"] = "project_path is not a git repository"
+        return out
+
+    files_raw = narrative.get("top_files_touched") or []
+    file_paths = [
+        f["path"] if isinstance(f, dict) else f
+        for f in files_raw
+        if (isinstance(f, dict) and f.get("path")) or isinstance(f, str)
+    ]
+    if not file_paths:
+        out["outcome_signal"] = SIGNAL_EXPLORATION
+        out["reason"] = "session touched no tracked files"
+        return out
+
     session_end = _parse_iso(narrative.get("ended_at"))
 
     # Branch lifecycle
@@ -411,18 +522,17 @@ def enrich_narrative_with_outcome(
     if branch_info:
         out["branch"] = branch_info
 
-    # File churn over `top_files_touched` (already prioritized in narrative)
-    files = narrative.get("top_files_touched") or []
-    # `top_files_touched` is sometimes [{path, count}, ...] and sometimes [str]
-    file_paths = [
-        f["path"] if isinstance(f, dict) else f
-        for f in files
-        if (isinstance(f, dict) and f.get("path")) or isinstance(f, str)
-    ]
-    if file_paths and session_end:
+    # File churn (file_paths already validated above)
+    if session_end:
         churn = lookup_files_churn(project_path, file_paths, session_end)
         if churn:
             out["files_churn"] = churn
+        # Trunk-direct ship signal: did these files get committed to
+        # main/master in the [-1d, +14d] window? Catches solo-style work
+        # (scripts, memory files, configs) that never went through a PR.
+        trunk = lookup_trunk_commits(project_path, file_paths, session_end)
+        if trunk:
+            out["trunk_commits"] = trunk
 
     # PR lookups (capped at 3 PRs to keep runtime sane)
     if use_gh:

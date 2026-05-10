@@ -474,7 +474,7 @@ def _build_aggregate_block(narratives: list[dict]) -> str:
             f"Outcome signal distribution: {dict(outcome_signals.most_common())}",
             f"Total fixup-shape commits in 14d after sessions: {fixup_total}",
             f"Total revert commits in 14d after sessions: {revert_total}",
-            "(Signals: shipped_clean = merged, no follow-ups; shipped_with_followups = merged but needed fix/hotfix commits; reverted = explicit revert detected; in_progress = still landing commits or open PR; abandoned = closed unmerged or branch deleted; no_artifact = exploration/debug session, no PR/branch.)",
+            "(Signals: shipped_clean = merged via PR, no follow-ups; shipped_direct = committed straight to trunk without a PR (common for solo work — scripts, memory files, configs, infra); shipped_with_followups = shipped (PR or trunk) but needed fix/hotfix commits in 14d; reverted = explicit revert detected; in_progress = still landing commits or open PR; abandoned = closed unmerged or branch deleted; unshipped = touched files but no commits landed in window (drafts, scratched work); exploration = no files touched (chat, research, Q&A); non_repo = work in non-git directory.)",
         ]
     return "\n".join(lines)
 

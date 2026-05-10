@@ -1836,10 +1836,14 @@ table.sessions td .agent-pill {
   white-space: nowrap;
 }
 .outcome-pill.out-shipped_clean        { background: #e2eee0; color: #2d4a26; border: 1px solid #c6dac1; }
+.outcome-pill.out-shipped_direct       { background: #ddebd9; color: #2f4f29; border: 1px solid #c0d6ba; }
 .outcome-pill.out-shipped_with_followups { background: #f4ecd8; color: #6b4f1d; border: 1px solid #e0d3a8; }
 .outcome-pill.out-reverted             { background: #f4dad5; color: #7a2a1a; border: 1px solid #e6b6ab; }
 .outcome-pill.out-in_progress          { background: #e6ecef; color: #34495a; border: 1px solid #cad6dd; }
 .outcome-pill.out-abandoned            { background: #ece4d6; color: #6b5a3a; border: 1px solid #d8c8a8; }
+.outcome-pill.out-exploration          { background: #ecedf3; color: #3a4a6a; border: 1px solid #d8dae5; }
+.outcome-pill.out-non_repo             { background: #f1ede0; color: #7c7568; border: 1px solid #e2dcc6; }
+.outcome-pill.out-unshipped            { background: #f4ede2; color: #6b5a3a; border: 1px solid #e2d3b5; }
 .outcome-pill.out-no_artifact          { background: #f1ede0; color: #7c7568; border: 1px solid #e2dcc6; }
 .outcome-pill.out-unavailable          { background: transparent; color: #b3ad9f; border: 1px dashed #d6d0c2; }
 
@@ -2949,6 +2953,13 @@ def _compact_outcome_for_session(outcome: dict) -> dict | None:
         out["branch"] = {
             "merged_into": branch.get("merged_into"),
             "commits_after": branch.get("commits_after_session"),
+        }
+    trunk = outcome.get("trunk_commits") or {}
+    if trunk.get("trunk_commits_in_window"):
+        out["trunk"] = {
+            "ref": trunk.get("ref"),
+            "commits_in_window": trunk.get("trunk_commits_in_window"),
+            "subjects": trunk.get("trunk_commit_subjects", [])[:3],
         }
     return out
 
