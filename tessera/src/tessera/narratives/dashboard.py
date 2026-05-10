@@ -288,6 +288,29 @@ article.observation:last-of-type { border-bottom: 0; }
 .chip.cat-project_specific { background: #f1ecdc; border-color: #e3d9bf; color: var(--ink-soft); }
 .chip.cat-cross_agent { background: #ecf2f3; border-color: #d6dee0; color: var(--slate); }
 .chip.cat-behavioral { background: #efe7d8; border-color: #e0d3b4; color: var(--warm); font-style: italic; }
+.chip.warn-noncomp { background: transparent; border-color: var(--rust); color: var(--rust); font-style: italic; }
+
+/* Visually de-emphasize observations/patterns with thin evidence so they
+ * don't sit at peer-level visual weight with strong findings. n<3 = weak. */
+.observation.weak-evidence {
+  opacity: 0.7;
+}
+.observation.weak-evidence .obs-title {
+  font-size: 16px;        /* down from default 18px */
+  color: var(--ink-soft);
+}
+.observation.weak-evidence .obs-claim {
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+.observation.weak-evidence .obs-num {
+  color: var(--ink-mute);
+  font-weight: 400;
+}
+/* Patterns that lack a comparative grounding get an extra subtle border */
+.observation.behavioral.non-comparative {
+  border-left-color: var(--ink-mute);
+}
 
 .section-sub { font-size: 13px; color: var(--ink-mute); font-weight: 400; font-style: italic; margin-left: 6px; }
 .observation.behavioral { border-left: 3px solid var(--warm-soft); padding-left: 16px; margin-left: -19px; background: linear-gradient(to right, rgba(184,121,74,0.04), transparent 200px); }
@@ -1055,8 +1078,9 @@ def _render_observation(
             "</div>"
         )
 
+    weak_class = " weak-evidence" if supporting < 3 else ""
     return (
-        f'<article class="observation" data-obs-block>'
+        f'<article class="observation{weak_class}" data-obs-block>'
         f'<div class="obs-header">'
         f'<span class="obs-num">§{idx}</span>'
         f'<span class="obs-title">{title}</span>'
@@ -1096,6 +1120,10 @@ def _render_behavioral_pattern(
         chips.append(f'<span class="chip cat-behavioral">{_esc(dimension)}</span>')
     if supporting:
         chips.append(f'<span class="chip">{supporting} sessions</span>')
+    if bp.get("non_comparative"):
+        chips.append(
+            '<span class="chip warn-noncomp" title="Pattern lacks a comparative grounding (X vs Y) — treat as descriptive, not predictive.">no comparison</span>'
+        )
     chips_html = '<span class="chips">' + "".join(chips) + "</span>" if chips else ""
 
     refs = bp.get("evidence_refs") or []
@@ -1144,8 +1172,10 @@ def _render_behavioral_pattern(
             "</div>"
         )
 
+    weak_class = " weak-evidence" if supporting < 3 else ""
+    non_comp_class = " non-comparative" if bp.get("non_comparative") else ""
     return (
-        f'<article class="observation behavioral" data-obs-block>'
+        f'<article class="observation behavioral{weak_class}{non_comp_class}" data-obs-block>'
         f'<div class="obs-header">'
         f'<span class="obs-num">§{idx}</span>'
         f'<span class="obs-title">{title}</span>'

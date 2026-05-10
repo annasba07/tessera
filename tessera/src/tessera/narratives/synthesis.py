@@ -173,7 +173,7 @@ Return ONE JSON object. No markdown fence. No preamble:
 - For `quick_wins`: only one-time fixes (a command, a config line). Behavioral changes go in `behavioral_patterns.experiment_to_try`, not here.
 - For `per_project`: only projects with ≥3 sessions.
 - No percentages unless the underlying count is ≥10.
-- Behavioral patterns should always include a comparison ("style A vs style B", "domain X vs domain Y", "early in session vs late", "Codex vs Claude on this task type", "well-formed prompt vs vague prompt", "with-subagent vs without") — comparison is what makes them insightful rather than descriptive. A pattern without a comparison is just a description.
+- Behavioral patterns MUST include a comparison ("style A vs style B", "domain X vs domain Y", "early in session vs late", "Codex vs Claude on this task type", "well-formed prompt vs vague prompt", "with-subagent vs without"). Comparison is what makes them insightful rather than descriptive. **A pattern without a comparison is a description, not a pattern — drop it or downgrade to `low` confidence.** "You work mostly at night (54K events vs 8.8K afternoon)" is descriptive ONLY because it has no behavioral comparison; "Night sessions show 2.3× the rate of context-loss waste vs. afternoon sessions" is a real pattern. The control matters: if you can't show that the same person/task in the contrasting condition behaves differently, you don't have a pattern.
 
 ## Aggregate stats (already computed — trust, don't recount)
 
@@ -560,6 +560,69 @@ async def _call_claude(prompt: str, model: str) -> str:
     return collected
 
 
+# Substrings/patterns that indicate the LLM compared two states. Loose
+# enough to catch most legit comparisons; strict enough to flag pure
+# descriptions like "you mostly work at night."
+_COMPARATIVE_MARKERS = (
+    " vs ", " vs.", " versus ",
+    " compared to ", " compared with ", " relative to ",
+    " more than ", " less than ",
+    " whereas ", " whereas,",
+    " in contrast", " on the other hand",
+    " in sessions where", " in sessions with",
+    " when you ", " when the ",
+    " before ", " after ",
+    " ratio ",
+    " instead of ", " rather than ",
+    " unique to ", " specific to ",
+    " differs from ", " differ from ",
+    " same pattern doesn't", " same pattern does not",
+    "doesn't show", "don't show", "does not show", "do not show",
+    " was added", " were added", " was applied", " were applied",
+    " was enforced", " were enforced", " was enabled", " were enabled",
+    " accepted in ", " rejected in ",       # "...accepted in second pass..."
+    " second pass ", " first pass ",        # iteration-comparison framing
+    "x vs", "× vs",
+    "× more", "x more",
+    "× fewer", "x fewer",
+    "× faster", "x faster", "× slower", "x slower",
+)
+_COMPARATIVE_REGEX = re.compile(
+    # "N out of M", "N/M"
+    r"\b\d+\s*(out of|/)\s*\d+\b|"
+    # "X% vs Y%", "X% compared"
+    r"\b\d+(\.\d+)?\s*%\s*(vs|versus|compared)|"
+    # "from N to M", "N → M"
+    r"\bfrom\s+\d+(\.\d+)?\s+to\s+\d+(\.\d+)?\b|\d+\s*→\s*\d+|"
+    # comparatives with arbitrary words between: "higher [...] than", "lower [...] than"
+    r"\b(higher|lower|faster|slower|larger|smaller|more|fewer|better|worse)\b[^.\n]{0,80}\bthan\b|"
+    # "Nx [adj]", "N× [adj]" — implicit comparative magnitudes
+    r"\b\d+(\.\d+)?\s*[x×]\s*(more|fewer|faster|slower|higher|lower)\b|"
+    # "when X was added/applied/used"
+    r"\bwhen\b\s+\w+\s+(was|were)\s+(added|applied|used|enforced|enabled)",
+    re.IGNORECASE,
+)
+
+
+def _has_comparative_grounding(text: str) -> bool:
+    """Heuristic: does this pattern text actually compare two states?
+
+    True if any comparative phrase or numerical-comparison pattern fires.
+    Conservative — false negatives are OK (a bit of noise demotes), false
+    positives are worse (would let descriptions through).
+    """
+    if not text:
+        return False
+    # Pad with a leading space so markers like " in sessions where" still
+    # match when they appear at position 0.
+    t = " " + text.lower()
+    if any(m in t for m in _COMPARATIVE_MARKERS):
+        return True
+    if _COMPARATIVE_REGEX.search(text):
+        return True
+    return False
+
+
 def _validate(parsed: dict, ref_to_id: dict[str, str]) -> dict:
     """Translate refs to session_ids; drop fabricated refs.
 
@@ -630,6 +693,7 @@ def _validate(parsed: dict, ref_to_id: dict[str, str]) -> dict:
     parsed["observations"] = obs_clean
 
     bp_clean: list[dict] = []
+    bp_demoted = 0
     for bp in parsed.get("behavioral_patterns") or []:
         if not isinstance(bp, dict):
             continue
@@ -639,9 +703,24 @@ def _validate(parsed: dict, ref_to_id: dict[str, str]) -> dict:
         bp["evidence_refs"] = kept_refs
         bp["evidence_sessions"] = resolved
         bp["supporting_count"] = len(kept_refs)
-        if kept_refs:
-            bp_clean.append(bp)
+        if not kept_refs:
+            continue
+
+        # Comparative-grounding check: a behavioral pattern is only valuable
+        # if it contrasts two states. The persona-review caught one weakness
+        # ('night-heavy work correlates with fragmentation') that was just
+        # a description because it had no afternoon control. Demote to low
+        # confidence + flag when the pattern field shows no comparison.
+        if not _has_comparative_grounding(bp.get("pattern") or ""):
+            if bp.get("confidence") in ("high", "medium"):
+                bp_demoted += 1
+            bp["confidence"] = "low"
+            bp["non_comparative"] = True
+        bp_clean.append(bp)
     parsed["behavioral_patterns"] = bp_clean
+    if bp_demoted:
+        meta = parsed.setdefault("meta", {})
+        meta["behavioral_patterns_demoted_non_comparative"] = bp_demoted
 
     qw_clean: list[dict] = []
     for qw in parsed.get("quick_wins") or []:
