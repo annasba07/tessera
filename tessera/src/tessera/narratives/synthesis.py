@@ -183,6 +183,16 @@ Return ONE JSON object. No markdown fence. No preamble:
 
 {sessions_block}
 
+## SCHEMA LOCK — read this before writing the JSON
+
+The output schema above is fixed. Do NOT rename fields. Do NOT invent new fields (no `corpus_size`, no `dominant_outcomes`, no `pattern_refs`, no `O01` / `B01` ref scheme). Do NOT migrate to a "v2" shape because prior runs feel familiar — every run uses this exact schema.
+
+In particular:
+- Findings live in `observations` (operational) and `behavioral_patterns` (behavioral). Not in `per_project`. Not in `meta.notes`. Not anywhere else.
+- Evidence refs are `S001`-`S{n_sessions_padded}`, not `O05` or `B12`.
+- `meta` may contain only: `notes` (string, optional caveats). The aggregate stats above are pre-computed; don't restate them in meta.
+- Returning `observations: []` AND `behavioral_patterns: []` while writing about patterns in `notes` is a contradiction — patterns belong in the typed fields, not in a free-text note. If you genuinely found nothing, say so explicitly in notes; if you found something, put it in the right list.
+
 Final reminder: cite refs (`S001`-`S{n_sessions_padded}`) verbatim from above. Return ONE JSON object with both `observations` (operational) and `behavioral_patterns` (behavioral) populated.
 """
 
@@ -572,10 +582,44 @@ def _validate(parsed: dict, ref_to_id: dict[str, str]) -> dict:
                 resolved.append(ref_to_id[r])
         return kept_refs, resolved, len(refs) - len(kept_refs)
 
+    # Field-name normalization — the model frequently uses sensible
+    # synonyms ('description' for 'claim', 'fix' for 'next_action',
+    # 'intervention' for 'experiment_to_try'). Map them back to the
+    # canonical schema names so downstream renderers don't need to know.
+    OBS_SYNONYMS = {
+        "description": "claim",
+        "summary": "claim",
+        "why": "interpretation",
+        "explanation": "interpretation",
+        "fix": "next_action",
+        "action": "next_action",
+        "recommendation": "next_action",
+        "type": "category",
+    }
+    BP_SYNONYMS = {
+        "description": "pattern",
+        "claim": "pattern",
+        "summary": "pattern",
+        "why": "interpretation",
+        "explanation": "interpretation",
+        "intervention": "experiment_to_try",
+        "experiment": "experiment_to_try",
+        "recommendation": "experiment_to_try",
+        "pattern_type": "dimension",
+        "type": "dimension",
+    }
+
+    def _normalize_keys(item: dict, synonyms: dict[str, str]) -> dict:
+        for src, dest in synonyms.items():
+            if src in item and dest not in item:
+                item[dest] = item.pop(src)
+        return item
+
     obs_clean: list[dict] = []
     for obs in parsed.get("observations") or []:
         if not isinstance(obs, dict):
             continue
+        obs = _normalize_keys(obs, OBS_SYNONYMS)
         kept_refs, resolved, dropped = _resolve(obs.get("evidence_refs") or [])
         dropped_total += dropped
         obs["evidence_refs"] = kept_refs
@@ -589,6 +633,7 @@ def _validate(parsed: dict, ref_to_id: dict[str, str]) -> dict:
     for bp in parsed.get("behavioral_patterns") or []:
         if not isinstance(bp, dict):
             continue
+        bp = _normalize_keys(bp, BP_SYNONYMS)
         kept_refs, resolved, dropped = _resolve(bp.get("evidence_refs") or [])
         dropped_total += dropped
         bp["evidence_refs"] = kept_refs
