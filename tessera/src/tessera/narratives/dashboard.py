@@ -290,17 +290,29 @@ article.observation:last-of-type { border-bottom: 0; }
 .chip.cat-behavioral { background: #efe7d8; border-color: #e0d3b4; color: var(--warm); font-style: italic; }
 .chip.warn-noncomp { background: transparent; border-color: var(--rust); color: var(--rust); font-style: italic; }
 
-/* Visually de-emphasize observations/patterns with thin evidence so they
- * don't sit at peer-level visual weight with strong findings. n<3 = weak. */
+/* Three-tier visual hierarchy by supporting_count.
+ * Default (≥6 sessions): full strength.
+ * thin-evidence (3-5):     subtle muting — present but lower-weight.
+ * weak-evidence (<3):      strong muting — visible but clearly anecdotal. */
+.observation.thin-evidence {
+  opacity: 0.88;
+}
+.observation.thin-evidence .obs-title {
+  font-size: 17px;
+  color: var(--ink);
+}
+.observation.thin-evidence .obs-claim {
+  color: var(--ink-soft);
+}
 .observation.weak-evidence {
-  opacity: 0.7;
+  opacity: 0.65;
 }
 .observation.weak-evidence .obs-title {
-  font-size: 16px;        /* down from default 18px */
+  font-size: 15px;
   color: var(--ink-soft);
 }
 .observation.weak-evidence .obs-claim {
-  font-size: 14px;
+  font-size: 13px;
   color: var(--ink-soft);
 }
 .observation.weak-evidence .obs-num {
@@ -1078,9 +1090,16 @@ def _render_observation(
             "</div>"
         )
 
-    weak_class = " weak-evidence" if supporting < 3 else ""
+    # Three tiers — the persona-review caught that strong (11-session) and
+    # mid (4-session) items rendered identically.
+    if supporting < 3:
+        evidence_class = " weak-evidence"
+    elif supporting < 6:
+        evidence_class = " thin-evidence"
+    else:
+        evidence_class = ""
     return (
-        f'<article class="observation{weak_class}" data-obs-block>'
+        f'<article class="observation{evidence_class}" data-obs-block>'
         f'<div class="obs-header">'
         f'<span class="obs-num">§{idx}</span>'
         f'<span class="obs-title">{title}</span>'
@@ -1172,10 +1191,15 @@ def _render_behavioral_pattern(
             "</div>"
         )
 
-    weak_class = " weak-evidence" if supporting < 3 else ""
+    if supporting < 3:
+        evidence_class = " weak-evidence"
+    elif supporting < 6:
+        evidence_class = " thin-evidence"
+    else:
+        evidence_class = ""
     non_comp_class = " non-comparative" if bp.get("non_comparative") else ""
     return (
-        f'<article class="observation behavioral{weak_class}{non_comp_class}" data-obs-block>'
+        f'<article class="observation behavioral{evidence_class}{non_comp_class}" data-obs-block>'
         f'<div class="obs-header">'
         f'<span class="obs-num">§{idx}</span>'
         f'<span class="obs-title">{title}</span>'
@@ -1283,6 +1307,142 @@ def _render_timeline(timeline: dict) -> str:
     )
 
 
+def _render_changelog_pulse(synthesis: dict) -> str:
+    """Compact above-the-fold 'pulse' summary — what changed this week.
+
+    The detailed Since-last-run section can sit further down; this block is
+    designed to be the first thing the eye lands on when the dashboard
+    opens, so the user sees the diff before the wall of patterns. Per
+    persona-review feedback: the dashboard should be diff-driven, not
+    content-driven.
+
+    Three render modes:
+      1. No prior run            → friendly hint, no big numbers
+      2. First diff (all `new`) → "baseline established" framing
+      3. Real diff               → 3 big numbers + top 3 deltas
+    """
+    try:
+        from ..changelog import changelog_for_current
+        from ..history import HistoryStore
+    except ImportError:
+        return ""
+    try:
+        cl = changelog_for_current(synthesis, HistoryStore())
+    except Exception:
+        return ""
+
+    if not cl.get("compared"):
+        return (
+            '<section class="pulse pulse-baseline">'
+            '<div class="pulse-label">Since last run</div>'
+            '<div class="pulse-msg">First run in history — this becomes the baseline. '
+            'Next run will show what changed.</div>'
+            '</section>'
+        )
+
+    s = cl.get("summary", {})
+    against = (cl.get("compared_against_date") or "")[:10]
+    obs = cl["observations"]
+    bp = cl["behavioral_patterns"]
+
+    # First-real-diff mode: prior run exists but everything is `new` —
+    # likely a schema-change run. Don't crow about "29 new" as if it were
+    # signal; explain the situation honestly.
+    no_continuity = (
+        s.get("obs_continuing", 0) == 0
+        and s.get("bp_continuing", 0) == 0
+        and s.get("obs_escalating", 0) == 0
+        and s.get("bp_escalating", 0) == 0
+        and s.get("obs_improving", 0) == 0
+        and s.get("bp_improving", 0) == 0
+        and s.get("obs_resolved", 0) == 0
+        and s.get("bp_resolved", 0) == 0
+        and s.get("obs_regressed", 0) == 0
+        and s.get("bp_regressed", 0) == 0
+    )
+    if no_continuity:
+        new_total = s.get("obs_new", 0) + s.get("bp_new", 0)
+        return (
+            '<section class="pulse pulse-baseline">'
+            '<div class="pulse-label">Since last run</div>'
+            f'<div class="pulse-msg">No patterns from <span class="pulse-date">{_esc(against)}</span> match this run\'s shape — likely a schema or prompt change between runs. '
+            f'These {new_total} patterns become the new baseline; future diffs will surface real escalations and improvements.</div>'
+            '</section>'
+        )
+
+    # Top-3 deltas: prefer regressed (most actionable), then escalating,
+    # then net-new highlights, then resolved closeable items.
+    def _to_card(item: dict, kind: str, arrow: str, color_class: str) -> str:
+        title = _esc(item.get("title") or "")
+        meta = ""
+        if "delta" in item:
+            d = item["delta"]
+            meta = f'{item.get("previous_count","?")} → {item.get("current_count","?")} ({"+" if d > 0 else ""}{d})'
+        elif "current_count" in item:
+            meta = f'{item.get("current_count")} sessions'
+        elif "previous_count" in item:
+            meta = f'was {item.get("previous_count")} sessions'
+        return (
+            f'<div class="pulse-card {color_class}">'
+            f'<div class="pulse-card-head"><span class="pulse-arrow">{arrow}</span><span class="pulse-kind">{kind}</span></div>'
+            f'<div class="pulse-card-title">{title}</div>'
+            f'<div class="pulse-card-meta">{_esc(meta)}</div>'
+            f'</div>'
+        )
+
+    candidates: list[tuple[str, dict, str, str, str]] = []
+    for item in obs.get("regressed", []) + bp.get("regressed", []):
+        candidates.append(("regressed", item, "↻", "regressed", "regressed"))
+    # Escalating: bigger delta first
+    escalating = sorted(
+        obs.get("escalating", []) + bp.get("escalating", []),
+        key=lambda x: -abs(x.get("delta", 0)),
+    )
+    for item in escalating:
+        candidates.append(("escalating", item, "▲", "escalating", "escalating"))
+    # Net-new: pick by current_count (highest evidence first)
+    net_new = sorted(
+        obs.get("new", []) + bp.get("new", []),
+        key=lambda x: -(x.get("current_count") or 0),
+    )
+    for item in net_new[:3]:
+        candidates.append(("new", item, "+", "new", "new"))
+    # Improving + Resolved fill remaining slots
+    for item in obs.get("improving", []) + bp.get("improving", []):
+        candidates.append(("improving", item, "▼", "improving", "improving"))
+    for item in obs.get("resolved", []) + bp.get("resolved", []):
+        candidates.append(("resolved", item, "✓", "resolved", "resolved"))
+
+    cards_html = "".join(
+        _to_card(item, kind, arrow, color)
+        for (kind, item, arrow, color, _) in candidates[:3]
+    )
+
+    # Three big numbers: net new (gross of resolved), escalating, regressed.
+    new_n = s.get("obs_new", 0) + s.get("bp_new", 0)
+    esc_n = s.get("obs_escalating", 0) + s.get("bp_escalating", 0)
+    reg_n = s.get("obs_regressed", 0) + s.get("bp_regressed", 0)
+    res_n = s.get("obs_resolved", 0) + s.get("bp_resolved", 0)
+
+    big_numbers = (
+        '<div class="pulse-numbers">'
+        f'<div class="pulse-stat"><div class="pulse-num">{esc_n}</div><div class="pulse-num-lab">escalating</div></div>'
+        f'<div class="pulse-stat"><div class="pulse-num pulse-num-warn">{reg_n}</div><div class="pulse-num-lab">regressed</div></div>'
+        f'<div class="pulse-stat"><div class="pulse-num">{new_n}</div><div class="pulse-num-lab">new</div></div>'
+        f'<div class="pulse-stat pulse-stat-good"><div class="pulse-num">{res_n}</div><div class="pulse-num-lab">resolved</div></div>'
+        '</div>'
+    )
+
+    return (
+        '<section class="pulse">'
+        f'<div class="pulse-label">Since last run <span class="pulse-date">({_esc(against)})</span></div>'
+        f'{big_numbers}'
+        f'<div class="pulse-deltas">{cards_html}</div>'
+        '<a class="pulse-jump" href="#changelog-detail">See full changelog ↓</a>'
+        '</section>'
+    )
+
+
 def _render_changelog_block(synthesis: dict) -> str:
     """Render the 'Since last run' diff at the top of Findings.
 
@@ -1377,7 +1537,7 @@ def _render_changelog_block(synthesis: dict) -> str:
     headline_str = " · ".join(headline_parts) if headline_parts else "no major changes"
 
     return (
-        '<section class="block changelog-block">'
+        '<section class="block changelog-block" id="changelog-detail">'
         f'<h2 class="section-title">Since last run <span class="count">({_esc(against)})</span> '
         f'<span class="section-sub">— {_esc(headline_str)}</span></h2>'
         f'{buckets_html}'
@@ -1454,12 +1614,17 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
     pp_list = synthesis.get("per_project") or []
     meta = synthesis.get("meta", {})
 
+    # Above-the-fold "pulse" — three numbers + top 3 deltas, before
+    # anything else. Persona-review: dashboard should be diff-driven.
+    pulse_html = _render_changelog_pulse(synthesis)
+
     # Active self-experiments — pulled from the live experiments store, not
     # from the synthesis output. This makes the section reflect the user's
     # current commitments even if the synthesis is days old.
     experiments_html = _render_experiments_block()
 
-    # Changelog: diff this run against the most recent prior run in history.
+    # Detailed changelog — sits below experiments, anchored for the
+    # "See full changelog ↓" jump in the pulse block.
     changelog_html = _render_changelog_block(synthesis)
 
     total_sessions = len(narratives) or meta.get("input_sessions") or 0
@@ -1548,10 +1713,11 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
 
     return f"""
 <section class="view" data-view="findings">
+  {pulse_html}
   <h1 class="headline">{_esc(headline)}</h1>
   {callout_html}
-  {changelog_html}
   {experiments_html}
+  {changelog_html}
   {timeline_html}
   {aggregate_html}
   {obs_block}
@@ -1934,6 +2100,117 @@ table.sessions td .agent-pill {
   border-radius: 8px;
   letter-spacing: 0.04em;
 }
+
+/* Above-the-fold pulse — first thing the eye hits on Monday morning. */
+.pulse {
+  margin: 0 0 32px 0;
+  padding: 22px 28px 18px 28px;
+  background: linear-gradient(180deg, #fbf6e8 0%, #faf9f4 100%);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+}
+.pulse.pulse-baseline {
+  background: var(--paper);
+  border-style: dashed;
+}
+.pulse-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-mute);
+  margin-bottom: 12px;
+}
+.pulse-date { color: var(--ink-soft); }
+.pulse-msg {
+  font-family: var(--serif);
+  font-size: 15px;
+  color: var(--ink-soft);
+  line-height: 1.5;
+  font-style: italic;
+}
+.pulse-numbers {
+  display: flex;
+  gap: 36px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+.pulse-stat { text-align: left; }
+.pulse-num {
+  font-family: var(--serif);
+  font-size: 36px;
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1;
+}
+.pulse-num.pulse-num-warn { color: var(--rust); }
+.pulse-stat-good .pulse-num { color: var(--leaf); }
+.pulse-num-lab {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-mute);
+  margin-top: 4px;
+}
+.pulse-deltas {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.pulse-card {
+  padding: 10px 14px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  border-left: 3px solid var(--line-strong);
+}
+.pulse-card.regressed { border-left-color: var(--rust); }
+.pulse-card.escalating { border-left-color: var(--rust); }
+.pulse-card.new { border-left-color: var(--warm); }
+.pulse-card.improving { border-left-color: var(--leaf); }
+.pulse-card.resolved { border-left-color: var(--leaf); opacity: 0.85; }
+.pulse-card-head {
+  display: flex; align-items: center; gap: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-mute);
+  margin-bottom: 4px;
+}
+.pulse-arrow {
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+.pulse-card.regressed .pulse-arrow,
+.pulse-card.escalating .pulse-arrow { color: var(--rust); }
+.pulse-card.new .pulse-arrow { color: var(--warm); }
+.pulse-card.improving .pulse-arrow,
+.pulse-card.resolved .pulse-arrow { color: var(--leaf); }
+.pulse-card-title {
+  font-family: var(--serif);
+  font-size: 14px;
+  color: var(--ink);
+  line-height: 1.3;
+  margin-bottom: 4px;
+}
+.pulse-card-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-mute);
+}
+.pulse-jump {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-mute);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--line-strong);
+  padding-bottom: 1px;
+}
+.pulse-jump:hover { color: var(--warm); border-bottom-color: var(--warm); }
 
 .changelog-block { margin-top: 24px; }
 .changelog-block .cl-bucket {

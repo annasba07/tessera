@@ -582,6 +582,13 @@ _COMPARATIVE_MARKERS = (
     " was enforced", " were enforced", " was enabled", " were enabled",
     " accepted in ", " rejected in ",       # "...accepted in second pass..."
     " second pass ", " first pass ",        # iteration-comparison framing
+    # Implicit comparison framing — "X without Y" implies "vs X with Y";
+    # "X independently re-reads" implies "vs X reusing parent's work".
+    " without receiving ", " without the ", " without a ",
+    " without explicit ", " without context", " without falsif",
+    " without verifying ", " without checking",
+    " independently re-read", " independently re-discover", " independently re-explore",
+    " missing from", " absent from",
     "x vs", "× vs",
     "× more", "x more",
     "× fewer", "x fewer",
