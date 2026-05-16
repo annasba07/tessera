@@ -127,6 +127,7 @@ header.masthead {
   flex-wrap: wrap;
 }
 
+.masthead .brand-block { display: flex; flex-direction: column; gap: 2px; }
 .masthead .brand {
   font-family: var(--sans);
   font-size: 13px;
@@ -135,6 +136,16 @@ header.masthead {
   text-transform: uppercase;
   color: var(--ink-soft);
 }
+.masthead .brand-tag {
+  font-family: var(--sans);
+  font-size: 10px;
+  color: var(--ink-mute);
+  letter-spacing: 0.04em;
+  text-transform: none;
+  font-weight: 400;
+}
+/* Make tooltip-style 'title' chips look hint-able */
+.pulse-stat[title] { cursor: help; }
 
 .masthead .meta {
   font-family: var(--sans);
@@ -1447,10 +1458,14 @@ def _render_changelog_pulse(synthesis: dict) -> str:
 
     big_numbers = (
         '<div class="pulse-numbers">'
-        f'<div class="pulse-stat"><div class="pulse-num">{esc_n}</div><div class="pulse-num-lab">escalating</div></div>'
-        f'<div class="pulse-stat"><div class="pulse-num pulse-num-warn">{reg_n}</div><div class="pulse-num-lab">regressed</div></div>'
-        f'<div class="pulse-stat"><div class="pulse-num">{new_n}</div><div class="pulse-num-lab">new</div></div>'
-        f'<div class="pulse-stat pulse-stat-good"><div class="pulse-num">{res_n}</div><div class="pulse-num-lab">resolved</div></div>'
+        f'<div class="pulse-stat" title="Patterns from last week with more supporting sessions this week — getting worse">'
+        f'<div class="pulse-num">{esc_n}</div><div class="pulse-num-lab">escalating</div></div>'
+        f'<div class="pulse-stat" title="Patterns that were resolved at some point but came back this week">'
+        f'<div class="pulse-num pulse-num-warn">{reg_n}</div><div class="pulse-num-lab">regressed</div></div>'
+        f'<div class="pulse-stat" title="Patterns that didn\'t exist last week — new friction or new behavior">'
+        f'<div class="pulse-num">{new_n}</div><div class="pulse-num-lab">new</div></div>'
+        f'<div class="pulse-stat pulse-stat-good" title="Patterns from last week that no longer appear — you might have fixed them">'
+        f'<div class="pulse-num">{res_n}</div><div class="pulse-num-lab">resolved</div></div>'
         '</div>'
     )
 
@@ -1932,7 +1947,10 @@ def render_dashboard(
 <body>
 <div class="frame">
   <header class="masthead">
-    <div class="brand">Tessera</div>
+    <div class="brand-block">
+      <div class="brand">Tessera</div>
+      <div class="brand-tag">Cross-session retrospective for AI coding agents · open weekly</div>
+    </div>
     {primary_nav}
     <div class="meta meta-findings">{findings_meta_html}</div>
     <div class="meta meta-explore" hidden>{explore_meta_html}</div>

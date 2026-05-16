@@ -106,8 +106,8 @@ Return ONE JSON object. No markdown fence. No preamble:
 
 ```
 {
-  "headline": "<≤200 chars: single biggest takeaway across both lenses>",
-  "if_you_do_one_thing_this_week": "<≤300 chars: ONE action grounded in specific evidence — could be operational OR behavioral, whichever is highest leverage>",
+  "headline": "<≤120 chars: ONE declarative sentence stating the single biggest takeaway. No semicolons. No estimation hedging ('roughly', 'approximately', 'an estimated 30-40%'). Plain English: 'X happened in N sessions; doing Y instead would prevent it.'>",
+  "if_you_do_one_thing_this_week": "<≤200 chars: ONE concrete action — a command, a config edit, a literal sentence to add to CLAUDE.md, or a one-line habit change. MUST NOT restate the headline. The headline names the problem; this names the next move. If the headline is 'X breaks things in N sessions', this is 'add Y to file Z' — not 'fix X.'>",
 
   "observations": [
     {
@@ -630,6 +630,30 @@ def _has_comparative_grounding(text: str) -> bool:
     return False
 
 
+def _trim_headline(headline: str, max_chars: int = 200) -> str:
+    """Enforce the headline constraint deterministically. The prompt asks
+    for ≤120 chars + no semicolons, but Sonnet sometimes ignores both.
+    Trim at the first sentence boundary (or first semicolon) when the
+    headline runs long, falling back to a hard char cut as a last resort.
+    """
+    if not headline:
+        return headline
+    h = headline.strip()
+    if len(h) <= max_chars and ";" not in h:
+        return h
+    # Cut at first sentence-ending punctuation followed by whitespace, or
+    # at first semicolon (LLMs love using semicolons to staple two
+    # thoughts together; we want only the first thought).
+    sentence_end = re.search(r"[.;!?](?:\s|$)", h)
+    if sentence_end:
+        return h[: sentence_end.start() + 1].strip()
+    # Hard fallback — truncate at last space before max_chars
+    if len(h) > max_chars:
+        cut = h[:max_chars].rsplit(" ", 1)[0]
+        return cut + "…"
+    return h
+
+
 def _validate(parsed: dict, ref_to_id: dict[str, str]) -> dict:
     """Translate refs to session_ids; drop fabricated refs.
 
@@ -754,6 +778,30 @@ def _validate(parsed: dict, ref_to_id: dict[str, str]) -> dict:
         ).strip()
     meta = parsed.setdefault("meta", {})
     meta["fabricated_ref_count"] = dropped_total
+
+    # Post-process headline: trim long / semicolon-stapled headlines into
+    # one declarative sentence. Persona-review caught one that was 78
+    # words across two semicolons.
+    if parsed.get("headline"):
+        original = parsed["headline"]
+        trimmed = _trim_headline(original, max_chars=200)
+        if trimmed != original:
+            parsed["headline"] = trimmed
+            meta["headline_trimmed"] = True
+
+    # Overlap detection: if `if_you_do_one_thing_this_week` shares >40%
+    # of its tokens with the headline, the LLM is restating instead of
+    # extending. Flag for the dashboard to render with a warning.
+    h_text = (parsed.get("headline") or "").lower()
+    one_thing = (parsed.get("if_you_do_one_thing_this_week") or "").lower()
+    if h_text and one_thing:
+        h_tokens = set(re.findall(r"\b\w{4,}\b", h_text))  # words ≥4 chars
+        ot_tokens = set(re.findall(r"\b\w{4,}\b", one_thing))
+        if h_tokens and ot_tokens:
+            overlap = len(h_tokens & ot_tokens) / len(h_tokens | ot_tokens)
+            if overlap > 0.4:
+                meta["headline_one_thing_overlap"] = round(overlap, 2)
+
     return parsed
 
 

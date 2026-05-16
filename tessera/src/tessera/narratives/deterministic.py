@@ -108,11 +108,24 @@ def _time_of_day_bucket(dt: datetime) -> str:
     return "night"
 
 
-def _file_paths_from_input(tool_input: Any) -> list[str]:
-    """Extract file paths from a tool_input dict or JSON string preview."""
+def _file_paths_from_input(tool_input: Any, tool_name: str | None = None) -> list[str]:
+    """Extract file paths from a tool_input dict or JSON string preview.
+
+    Handles three shapes:
+      - Claude/Gemini: {"file_path": "..."} or {"path": "..."} (FILE_PATH_KEYS)
+      - Claude MultiEdit: {"edits": [{"file_path": "..."}, ...]}
+      - Codex apply_patch: {"patch": "*** Update File: src/foo.py\n@@ ..."}
+        — file paths live inside a unified-diff text, prefixed by
+        '*** Update File:', '*** Add File:', or '*** Delete File:'.
+    """
     if tool_input is None:
         return []
     if isinstance(tool_input, str):
+        # Codex's apply_patch sends the unified-diff text as a raw string
+        # input (no JSON wrapping). Detect that case and treat the string
+        # itself as the patch body.
+        if tool_name == "apply_patch" or tool_input.lstrip().startswith("*** Begin Patch"):
+            return _paths_from_apply_patch(tool_input)
         try:
             tool_input = json.loads(tool_input)
         except (json.JSONDecodeError, TypeError):
@@ -133,7 +146,25 @@ def _file_paths_from_input(tool_input: Any) -> list[str]:
                     v = e.get(key)
                     if isinstance(v, str) and v:
                         paths.append(v)
+    # Codex apply_patch — paths embedded in a unified-diff text
+    patch = tool_input.get("patch") or tool_input.get("input") or tool_input.get("diff")
+    if isinstance(patch, str) and patch:
+        paths.extend(_paths_from_apply_patch(patch))
     return paths
+
+
+# Match Codex apply_patch headers: '*** Update File: path', '*** Add File:
+# path', '*** Delete File: path'. Path can be relative or absolute, and
+# may contain spaces (terminator is end-of-line).
+_APPLY_PATCH_HEADER = re.compile(
+    r"^\*{3}\s+(?:Update|Add|Delete)\s+File:\s+(.+?)\s*$",
+    re.MULTILINE,
+)
+
+
+def _paths_from_apply_patch(patch_text: str) -> list[str]:
+    """Parse Codex apply_patch headers to extract touched file paths."""
+    return [m.group(1).strip() for m in _APPLY_PATCH_HEADER.finditer(patch_text)]
 
 
 def _bash_command_text(tool_input: Any) -> str | None:
@@ -341,7 +372,7 @@ def extract_deterministic(session_id: str, events: list[dict]) -> dict:
             tool_input_hash_counter[ihash] += 1
             tool_input_hash_to_pair.setdefault(ihash, (tname, tinput))
             # File paths
-            for p in _file_paths_from_input(tinput):
+            for p in _file_paths_from_input(tinput, tname):
                 file_paths_touched[p] += 1
                 directory = "/".join(p.split("/")[:-1]) or "/"
                 dir_counter[directory] += 1
