@@ -855,7 +855,10 @@ def synthesize(
     # 4 chars/token heuristic). Anything close to that risks truncation
     # mid-prompt, which produces silently-degraded output. Hard-fail
     # instead so the user sees the cause and can drop --lookback-days.
-    PROMPT_CHAR_LIMIT = 700_000
+    # Was 700K — too conservative. Sonnet 4.6 handles ~200K input tokens
+    # natively (~800K chars), with 1M context available via long-context mode.
+    # 900K leaves headroom for output without forcing the prompt to truncate.
+    PROMPT_CHAR_LIMIT = 900_000
     if len(prompt) > PROMPT_CHAR_LIMIT:
         raise ValueError(
             f"synthesis prompt is {len(prompt):,} chars (~{len(prompt)//4:,} tokens), "
