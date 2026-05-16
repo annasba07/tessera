@@ -238,7 +238,14 @@ def _extract_json(raw: str) -> dict:
     return json.loads(text)
 
 
-async def _call_claude(prompt: str, model: str) -> str:
+_TRANSIENT_FAILURE_SIGNALS = (
+    "Request timed out", "Connection reset", "Connection error",
+    "Rate limit", "rate_limit_error", "overloaded_error",
+    "Service Unavailable", "503 Service",
+)
+
+
+async def _call_claude_once(prompt: str, model: str) -> str:
     collected = ""
     agen = query(
         prompt=prompt,
@@ -261,6 +268,32 @@ async def _call_claude(prompt: str, model: str) -> str:
         # avoids GC racing a later query() with "generator already running".
         await agen.aclose()
     return collected
+
+
+async def _call_claude(prompt: str, model: str, *, max_retries: int = 2) -> str:
+    """One-shot retry on transient SDK failures. Mirror of synthesis._call_claude
+    — the same vulnerability hits per-session extraction at scale."""
+    import asyncio, sys
+    last_collected = ""
+    for attempt in range(max_retries + 1):
+        collected = await _call_claude_once(prompt, model)
+        last_collected = collected
+        stripped = collected.strip()
+        is_short_failure = (
+            len(stripped) < 200
+            and any(sig.lower() in stripped.lower() for sig in _TRANSIENT_FAILURE_SIGNALS)
+        )
+        if not is_short_failure:
+            return collected
+        if attempt < max_retries:
+            backoff_s = 3 * (1 + 2 * attempt)
+            print(
+                f"  → per-session LLM call returned transient failure ({stripped[:80]!r}) "
+                f"— retrying in {backoff_s}s",
+                file=sys.stderr,
+            )
+            await asyncio.sleep(backoff_s)
+    return last_collected
 
 
 async def extract_narrative(

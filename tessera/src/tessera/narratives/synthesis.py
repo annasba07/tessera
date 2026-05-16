@@ -531,10 +531,50 @@ def _extract_json(raw: str) -> dict:
     fence = re.match(r"^```(?:json)?\s*(.*?)\s*```\s*$", text, re.DOTALL)
     if fence:
         text = fence.group(1).strip()
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        # Dump the raw LLM output so the user can see what came back
+        # (empty? truncated? markdown wrapped in unexpected way?) instead
+        # of just a "Expecting value: line 1 column 1" trace with no body.
+        import os, tempfile, time
+        dump_path = Path(tempfile.gettempdir()) / f"tessera-synthesis-raw-{int(time.time())}.txt"
+        try:
+            dump_path.write_text(
+                f"# Raw synthesis output that failed json.loads\n"
+                f"# error: {exc}\n"
+                f"# raw length: {len(raw)} chars\n"
+                f"# stripped length: {len(text)} chars\n"
+                f"#\n"
+                f"{raw}",
+                encoding="utf-8",
+            )
+            print(
+                f"\nerror: model returned non-JSON output (length={len(raw)} chars). "
+                f"Raw response saved to {dump_path} for inspection.",
+                file=__import__("sys").stderr,
+            )
+        except OSError:
+            pass
+        raise
 
 
-async def _call_claude(prompt: str, model: str) -> str:
+# Sentinel substrings the SDK returns as the entire assistant text when the
+# underlying request fails at the HTTP/CLI layer. These look like content
+# but really mean "the model never got to generate." Retry once, then bail.
+_TRANSIENT_FAILURE_SIGNALS = (
+    "Request timed out",
+    "Connection reset",
+    "Connection error",
+    "Rate limit",
+    "rate_limit_error",
+    "overloaded_error",
+    "Service Unavailable",
+    "503 Service",
+)
+
+
+async def _call_claude_once(prompt: str, model: str) -> str:
     collected = ""
     agen = query(
         prompt=prompt,
@@ -558,6 +598,37 @@ async def _call_claude(prompt: str, model: str) -> str:
         # subsequent query() call ("asynchronous generator is already running").
         await agen.aclose()
     return collected
+
+
+async def _call_claude(prompt: str, model: str, *, max_retries: int = 2) -> str:
+    """Call Claude with one-shot retry on transient failures.
+
+    The agent SDK returns short error sentinels ("Request timed out",
+    rate-limit messages) as the entire assistant text when the underlying
+    HTTP request fails. Without retry, every long-prompt synthesis would
+    crash on the first hiccup. Retries with exponential backoff (3s, 8s).
+    """
+    import sys
+    last_collected = ""
+    for attempt in range(max_retries + 1):
+        collected = await _call_claude_once(prompt, model)
+        last_collected = collected
+        stripped = collected.strip()
+        is_short_failure = (
+            len(stripped) < 200
+            and any(sig.lower() in stripped.lower() for sig in _TRANSIENT_FAILURE_SIGNALS)
+        )
+        if not is_short_failure:
+            return collected
+        if attempt < max_retries:
+            backoff_s = 3 * (1 + 2 * attempt)  # 3s, 9s
+            print(
+                f"  → LLM returned transient failure ({stripped[:80]!r}) — "
+                f"retrying in {backoff_s}s (attempt {attempt + 2}/{max_retries + 1})",
+                file=sys.stderr,
+            )
+            await asyncio.sleep(backoff_s)
+    return last_collected
 
 
 # Substrings/patterns that indicate the LLM compared two states. Loose
