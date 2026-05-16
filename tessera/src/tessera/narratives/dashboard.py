@@ -1331,12 +1331,28 @@ def _render_changelog_pulse(synthesis: dict) -> str:
     except Exception:
         return ""
 
+    # Provenance chip: heuristic auditability — shows the user how many
+    # behavioral_patterns got demoted as non-comparative this run, so the
+    # "we caught the horoscopes" claim has visible evidence.
+    syn_meta = synthesis.get("meta", {}) if isinstance(synthesis, dict) else {}
+    bp_total = syn_meta.get("behavioral_patterns_total") or len(
+        synthesis.get("behavioral_patterns") or []
+    )
+    bp_demoted = syn_meta.get("behavioral_patterns_demoted_non_comparative", 0)
+    provenance = (
+        f'<div class="pulse-provenance">'
+        f'<span title="behavioral patterns that lacked a comparative grounding and got auto-demoted to low confidence">'
+        f'{bp_demoted}/{bp_total} demoted as non-comparative'
+        f'</span></div>'
+    ) if bp_total else ""
+
     if not cl.get("compared"):
         return (
             '<section class="pulse pulse-baseline">'
             '<div class="pulse-label">Since last run</div>'
             '<div class="pulse-msg">First run in history — this becomes the baseline. '
             'Next run will show what changed.</div>'
+            f'{provenance}'
             '</section>'
         )
 
@@ -1362,11 +1378,16 @@ def _render_changelog_pulse(synthesis: dict) -> str:
     )
     if no_continuity:
         new_total = s.get("obs_new", 0) + s.get("bp_new", 0)
+        # Honest framing: don't speculate about why nothing matches. Could
+        # be a schema change, a 30-day gap, or a genuinely fresh wave —
+        # all three look identical in the data. Just state what's true.
         return (
             '<section class="pulse pulse-baseline">'
             '<div class="pulse-label">Since last run</div>'
-            f'<div class="pulse-msg">No patterns from <span class="pulse-date">{_esc(against)}</span> match this run\'s shape — likely a schema or prompt change between runs. '
-            f'These {new_total} patterns become the new baseline; future diffs will surface real escalations and improvements.</div>'
+            f'<div class="pulse-msg">Diffing against <span class="pulse-date">{_esc(against)}</span>: '
+            f'{new_total} patterns surfaced, 0 continuing. '
+            f'No cross-run continuity to report yet.</div>'
+            f'{provenance}'
             '</section>'
         )
 
@@ -1439,6 +1460,7 @@ def _render_changelog_pulse(synthesis: dict) -> str:
         f'{big_numbers}'
         f'<div class="pulse-deltas">{cards_html}</div>'
         '<a class="pulse-jump" href="#changelog-detail">See full changelog ↓</a>'
+        f'{provenance}'
         '</section>'
     )
 
@@ -1560,6 +1582,8 @@ def _render_experiments_block() -> str:
     if not (active or graduated or not_tried):
         return ""
 
+    from datetime import datetime, timezone
+
     def _exp_card(exp, status_label: str, status_class: str) -> str:
         last_eval = exp.evaluations[-1] if exp.evaluations else None
         eval_html = ""
@@ -1573,8 +1597,28 @@ def _render_experiments_block() -> str:
                 f'<span class="exp-meta">evaluated {_esc(last_eval.get("evaluated_at","")[:10])}</span>'
                 f'</div>'
             )
+
+        # Stale flag: an active experiment with 0 evals after >7 days is
+        # not running — flag it instead of presenting it as live work.
+        stale_html = ""
+        stale_class = ""
+        if status_class == "active" and not exp.evaluations:
+            try:
+                started = datetime.fromisoformat(exp.started_at.replace("Z", "+00:00"))
+                age_days = (datetime.now(timezone.utc) - started).days
+                if age_days >= 7:
+                    stale_class = " exp-stale"
+                    stale_html = (
+                        f'<div class="exp-stale-banner">'
+                        f'⚠ {age_days} days since started, no evaluations recorded — '
+                        f'run <code>tessera experiments evaluate</code> or close it.'
+                        f'</div>'
+                    )
+            except (ValueError, TypeError):
+                pass
+
         return (
-            f'<article class="experiment exp-{status_class}">'
+            f'<article class="experiment exp-{status_class}{stale_class}">'
             f'<div class="exp-head">'
             f'<span class="exp-status">{status_label}</span>'
             f'<span class="exp-title">{_esc(exp.title)}</span>'
@@ -1582,6 +1626,7 @@ def _render_experiments_block() -> str:
             f'</div>'
             f'<p class="exp-text">{_esc(exp.experiment_text)}</p>'
             f'<div class="exp-meta">started {_esc(exp.started_at[:10])} · {len(exp.evaluations)} eval(s)</div>'
+            f'{stale_html}'
             f'{eval_html}'
             f'</article>'
         )
@@ -2211,6 +2256,15 @@ table.sessions td .agent-pill {
   padding-bottom: 1px;
 }
 .pulse-jump:hover { color: var(--warm); border-bottom-color: var(--warm); }
+.pulse-provenance {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-mute);
+  letter-spacing: 0.04em;
+}
 
 .changelog-block { margin-top: 24px; }
 .changelog-block .cl-bucket {
@@ -2260,6 +2314,21 @@ table.sessions td .agent-pill {
 }
 .experiments-block .experiment.exp-graduated { border-left-color: var(--leaf); background: #f1f6ee; }
 .experiments-block .experiment.exp-not_tried { border-left-color: var(--ink-mute); background: #f5f3ec; opacity: 0.85; }
+.experiments-block .experiment.exp-stale { border-left-color: var(--rust); background: #faecea; }
+.experiments-block .exp-stale-banner {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: #f4dad5;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: #7a2a1a;
+}
+.experiments-block .exp-stale-banner code {
+  background: rgba(122, 42, 26, 0.1);
+  padding: 0 4px;
+  border-radius: 2px;
+}
 .experiments-block .exp-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .experiments-block .exp-status {
   font-family: var(--mono); font-size: 10px; text-transform: uppercase;

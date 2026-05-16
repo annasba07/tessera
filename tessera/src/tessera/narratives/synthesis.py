@@ -725,9 +725,11 @@ def _validate(parsed: dict, ref_to_id: dict[str, str]) -> dict:
             bp["non_comparative"] = True
         bp_clean.append(bp)
     parsed["behavioral_patterns"] = bp_clean
-    if bp_demoted:
-        meta = parsed.setdefault("meta", {})
-        meta["behavioral_patterns_demoted_non_comparative"] = bp_demoted
+    # Always surface the demotion count, even when zero — makes the heuristic
+    # claim auditable on every run instead of "trust me, nothing got demoted."
+    meta = parsed.setdefault("meta", {})
+    meta["behavioral_patterns_demoted_non_comparative"] = bp_demoted
+    meta["behavioral_patterns_total"] = len(bp_clean)
 
     qw_clean: list[dict] = []
     for qw in parsed.get("quick_wins") or []:
