@@ -788,6 +788,26 @@ footer.colophon {
   transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 .rate-row button:hover { background: var(--hint); }
+.rate-saved-badge {
+  display: inline-block;
+  margin-left: 10px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--leaf);
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 180ms, transform 180ms;
+  pointer-events: none;
+}
+.rate-saved-badge.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+/* Subtle hover affordance — tells the user 'this is the active obs for u/w/k/s'. */
+article.observation:hover {
+  background: linear-gradient(to right, rgba(184,121,74,0.025), transparent 400px);
+}
 .rate-row button.active.useful  { background: var(--leaf); color: #fff; border-color: var(--leaf); }
 .rate-row button.active.wrong   { background: var(--rust); color: #fff; border-color: var(--rust); }
 .rate-row button.active.known   { background: var(--warm-soft); color: #fff; border-color: var(--warm-soft); }
@@ -2103,11 +2123,13 @@ def render_dashboard(
     fab_html = (
         f' · {fab} fabricated ref{"s" if fab != 1 else ""} dropped' if fab else ""
     )
+    # Masthead meta is run CONTEXT only (date, model, agent breakdown).
+    # Sessions / active-min duplicate the aggregate strip below — remove
+    # them here so the two strips have distinct, non-overlapping jobs.
+    # Persona-review fix #7.
     findings_meta = " · ".join(
         bit
         for bit in [
-            f"{in_synthesis} sessions",
-            f"{int(total_active_synth):,} active min" if total_active_synth else "",
             agent_str_synth,
             (meta.get("generated_at") or "")[:10],
             meta.get("model") or "",
@@ -3609,8 +3631,34 @@ COMBINED_JS = r"""
     sync.querySelector('.count').textContent = n;
   }
 
+  // Visual confirmation after a rate action — without it the user clicks
+  // [useful] and stares at the same UI wondering if anything happened.
+  function showRateSaved(row, rating, totalRatings) {
+    let badge = row.querySelector('.rate-saved-badge');
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'rate-saved-badge';
+      row.appendChild(badge);
+    }
+    const msg = rating
+      ? '✓ saved as ' + rating + ' · ' + totalRatings + ' ratings ready to sync'
+      : '✗ rating removed · ' + totalRatings + ' ratings ready to sync';
+    badge.textContent = msg;
+    badge.classList.add('show');
+    clearTimeout(badge._fadeTimer);
+    badge._fadeTimer = setTimeout(function() { badge.classList.remove('show'); }, 2400);
+  }
+
+  // Track which rate-row the user is currently hovering — used by the
+  // keystroke shortcut (u/w/k/s) to know which observation to rate.
+  let __currentRateRow = null;
+
   // Wire each rate row
   document.querySelectorAll('[data-rate-row]').forEach(function(row) {
+    const obsCard = row.closest('article');
+    if (obsCard) {
+      obsCard.addEventListener('mouseenter', function() { __currentRateRow = row; });
+    }
     const idx = parseInt(row.dataset.obsIndex, 10);
     const key = row.dataset.obsKey;
     const title = row.dataset.obsTitle;
@@ -3624,12 +3672,14 @@ COMBINED_JS = r"""
       btn.addEventListener('click', function() {
         const rating = btn.dataset.rate;
         const state = loadRatings();
+        let savedRating = rating;
         // Toggle off if already this rating
         if (state[key] && state[key].rating === rating) {
           delete state[key];
           row.querySelectorAll('button.active').forEach(function(b) {
             b.classList.remove('active', 'useful', 'wrong', 'known', 'skip');
           });
+          savedRating = null;
         } else {
           state[key] = { index: idx, key: key, title: title, rating: rating };
           row.querySelectorAll('button.active').forEach(function(b) {
@@ -3639,8 +3689,26 @@ COMBINED_JS = r"""
         }
         saveRatings(state);
         refreshSync();
+        showRateSaved(row, savedRating, Object.keys(state).length);
       });
     });
+  });
+
+  // Keystroke shortcuts: u/w/k/s rate the currently-hovered observation.
+  // Implied by the [u]seful / [w]rong / [k]nown / [s]kip chip labels —
+  // before this they were a lie. Ignored when typing in inputs/textareas.
+  document.addEventListener('keydown', function(e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const tgt = e.target;
+    if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return;
+    const map = { u: 'useful', w: 'wrong', k: 'known', s: 'skip' };
+    const rating = map[e.key.toLowerCase()];
+    if (!rating || !__currentRateRow) return;
+    const btn = __currentRateRow.querySelector('button[data-rate="' + rating + '"]');
+    if (btn) {
+      e.preventDefault();
+      btn.click();
+    }
   });
 
   // Floating sync button + modal
