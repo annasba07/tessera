@@ -288,7 +288,11 @@ h2.section-title {
   margin: 0 0 22px;
   padding-bottom: 10px;
   border-bottom: 1px solid var(--line);
+  scroll-margin-top: 12px;
 }
+/* Section titles with a title attribute (tooltip) become hint-able on hover. */
+h2.section-title[title] { cursor: help; }
+h2.section-title[title]:hover { color: var(--ink-soft); }
 h2.section-title .count {
   color: var(--ink);
   margin-left: 6px;
@@ -1401,21 +1405,39 @@ def _render_changelog_pulse(synthesis: dict) -> str:
         synthesis.get("behavioral_patterns") or []
     )
     bp_demoted = syn_meta.get("behavioral_patterns_demoted_non_comparative", 0)
-    provenance = (
-        f'<div class="pulse-provenance">'
-        f'<span title="behavioral patterns that lacked a comparative grounding and got auto-demoted to low confidence">'
-        f'{bp_demoted}/{bp_total} demoted as non-comparative'
-        f'</span></div>'
-    ) if bp_total else ""
+    # Provenance: reframe from error-shape ("9/18 demoted") to
+    # quality-signal-shape ("validator passed N comparative, auto-demoted
+    # M descriptive") so it reads as a check that ran, not a failure count.
+    if bp_total:
+        kept = bp_total - bp_demoted
+        if bp_demoted == 0:
+            provenance_text = f"✓ Quality check: all {bp_total} patterns held to comparative-grounding standard"
+        else:
+            provenance_text = (
+                f"✓ Quality check: {kept}/{bp_total} patterns passed comparative-grounding; "
+                f"{bp_demoted} auto-folded as descriptive (not horoscope)"
+            )
+        provenance = (
+            '<div class="pulse-provenance">'
+            '<span title="The non-comparative validator scans each behavioral pattern for X-vs-Y framing. Descriptive observations without a contrast get folded out of the main view. This number IS the quality check working — higher means more honest output, not more failures.">'
+            f'{_esc(provenance_text)}'
+            '</span></div>'
+        )
+    else:
+        provenance = ""
 
     if not cl.get("compared"):
+        # First-ever run: don't take above-the-fold real estate from the
+        # actual findings. Render as a slim footnote-style strip BELOW
+        # the H1, not a full pulse block. Marked with a sentinel comment
+        # the findings renderer uses to decide placement.
         return (
-            '<section class="pulse pulse-baseline">'
-            '<div class="pulse-label">Since last run</div>'
-            '<div class="pulse-msg">First run in history — this becomes the baseline. '
-            'Next run will show what changed.</div>'
+            '<!--pulse-position:below-headline-->'
+            '<aside class="pulse-slim">'
+            '<span class="pulse-label">Since last run</span> · '
+            'First run in history — baseline established. Next run will show diffs. '
             f'{provenance}'
-            '</section>'
+            '</aside>'
         )
 
     s = cl.get("summary", {})
@@ -1440,17 +1462,16 @@ def _render_changelog_pulse(synthesis: dict) -> str:
     )
     if no_continuity:
         new_total = s.get("obs_new", 0) + s.get("bp_new", 0)
-        # Honest framing: don't speculate about why nothing matches. Could
-        # be a schema change, a 30-day gap, or a genuinely fresh wave —
-        # all three look identical in the data. Just state what's true.
+        # No-continuity mode: slim treatment below the H1. The big H1
+        # carries the actual finding; this is footnote context.
         return (
-            '<section class="pulse pulse-baseline">'
-            '<div class="pulse-label">Since last run</div>'
-            f'<div class="pulse-msg">Diffing against <span class="pulse-date">{_esc(against)}</span>: '
-            f'{new_total} patterns surfaced, 0 continuing. '
-            f'No cross-run continuity to report yet.</div>'
+            '<!--pulse-position:below-headline-->'
+            '<aside class="pulse-slim">'
+            f'<span class="pulse-label">Since last run</span> · '
+            f'Diffing against <span class="pulse-date">{_esc(against)}</span>: '
+            f'{new_total} patterns surfaced, 0 continuing yet. '
             f'{provenance}'
-            '</section>'
+            '</aside>'
         )
 
     # Top-3 deltas: prefer regressed (most actionable), then escalating,
@@ -1739,8 +1760,8 @@ def _render_experiments_block() -> str:
     total = len(active) + len(graduated) + len(not_tried)
     return (
         '<section class="block experiments-block">'
-        f'<h2 class="section-title">Active experiments <span class="count">({total})</span> '
-        '<span class="section-sub">— things you committed to by rating a behavioral pattern [useful]</span></h2>'
+        f'<h2 class="section-title" title="Things you committed to by rating a behavioral pattern as [useful]. Status: active = running, graduated = confirmed working, not-tried = no adherence, inconclusive = mixed signals after 2+ evals.">'
+        f'Active experiments <span class="count">({total})</span></h2>'
         f'{"".join(cards)}'
         '</section>'
     )
@@ -1846,22 +1867,35 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
             "</div>"
         )
 
+    # Visual hierarchy by informativeness: scope numbers (Sessions /
+    # Observations / Patterns) get prominent treatment; secondary stats
+    # (Quick wins / Projects / Active min) get muted. Fabrications hides
+    # when 0 (the common case); only shown when there's something to flag.
+    fab_count = meta.get("fabricated_ref_count", 0) or 0
+    stats_primary = (
+        f'<div class="stat stat-primary"><div class="num">{total_sessions}</div><div class="lab">Sessions</div></div>'
+        f'<div class="stat stat-primary"><div class="num">{len(obs_list)}</div><div class="lab">Observations</div></div>'
+        f'<div class="stat stat-primary"><div class="num">{strong_bp_count + demoted_bp_count}</div><div class="lab">Patterns</div></div>'
+    )
+    stats_secondary = (
+        f'<div class="stat stat-secondary"><div class="num">{len(qw_list)}</div><div class="lab">Quick wins</div></div>'
+        f'<div class="stat stat-secondary"><div class="num">{len(pp_list)}</div><div class="lab">Projects</div></div>'
+        f'<div class="stat stat-secondary"><div class="num">{int(total_active):,}</div><div class="lab">Active min</div></div>'
+    )
+    fab_stat = (
+        f'<div class="stat stat-warn"><div class="num">{fab_count}</div><div class="lab">Fabrications</div></div>'
+        if fab_count > 0 else ""
+    )
     aggregate_html = (
         '<div class="aggregate-strip">'
-        f'<div class="stat"><div class="num">{total_sessions}</div><div class="lab">Sessions</div></div>'
-        f'<div class="stat"><div class="num">{len(obs_list)}</div><div class="lab">Observations</div></div>'
-        f'<div class="stat"><div class="num">{len(bp_list)}</div><div class="lab">Patterns</div></div>'
-        f'<div class="stat"><div class="num">{len(qw_list)}</div><div class="lab">Quick wins</div></div>'
-        f'<div class="stat"><div class="num">{len(pp_list)}</div><div class="lab">Projects</div></div>'
-        f'<div class="stat"><div class="num">{int(total_active):,}</div><div class="lab">Active min</div></div>'
-        f'<div class="stat"><div class="num">{meta.get("fabricated_ref_count", 0)}</div><div class="lab">Fabrications</div></div>'
+        f'{stats_primary}{stats_secondary}{fab_stat}'
         "</div>"
     )
 
     obs_block = (
         '<section class="block">'
-        f'<h2 class="section-title">Observations <span class="count">({len(obs_list)})</span> '
-        '<span class="section-sub">— operational fixes</span></h2>'
+        f'<h2 class="section-title" title="Operational fixes — environmental issues, tooling problems, project-specific bugs.">'
+        f'Observations <span class="count">({len(obs_list)})</span></h2>'
         f"{obs_html}"
         "</section>"
         if obs_html
@@ -1873,8 +1907,8 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
     )
     bp_block = (
         '<section class="block">'
-        f'<h2 class="section-title">Behavioral patterns {bp_count_chip} '
-        '<span class="section-sub">— how you work, comparative & experiments to try</span></h2>'
+        f'<h2 class="section-title" title="How you work — comparative patterns with 1-week experiments to try. Patterns lacking X-vs-Y framing get auto-demoted into the collapsed fold at bottom.">'
+        f'Behavioral patterns {bp_count_chip}</h2>'
         f"{bp_html}"
         "</section>"
         if bp_html
@@ -1897,11 +1931,70 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
         else ""
     )
 
+    # Pulse placement: when slim (baseline/no-continuity modes), tuck it
+    # below the headline as a footnote so the H1 finding leads. When rich
+    # (real diff data), it stays above the headline as the lead element.
+    pulse_above = ""
+    pulse_below = ""
+    if "pulse-position:below-headline" in pulse_html:
+        pulse_below = pulse_html
+    else:
+        pulse_above = pulse_html
+
+    # Sticky section nav — jump chips for each non-empty block. Page can
+    # have 38+ atomic items; without nav users can't get to per-project
+    # or notes without scrolling past everything.
+    nav_chips = []
+    if obs_html:
+        nav_chips.append(f'<a href="#sec-observations">obs ({len(obs_list)})</a>')
+    if bp_html:
+        bp_count_str = f"{strong_bp_count}" + (f"+{demoted_bp_count}" if demoted_bp_count else "")
+        nav_chips.append(f'<a href="#sec-behavioral">patterns ({bp_count_str})</a>')
+    if qw_html:
+        nav_chips.append(f'<a href="#sec-quickwins">quick wins ({len(qw_list)})</a>')
+    if pp_html:
+        nav_chips.append(f'<a href="#sec-perproject">projects ({len(pp_list)})</a>')
+    if notes:
+        nav_chips.append('<a href="#sec-notes">notes</a>')
+    section_nav_html = (
+        f'<nav class="section-nav">{"".join(nav_chips)}</nav>'
+        if len(nav_chips) >= 3 else ""
+    )
+
+    # Inject anchor IDs into the section blocks
+    obs_block = obs_block.replace(
+        '<section class="block">',
+        '<section class="block" id="sec-observations">',
+        1,
+    ) if obs_block else obs_block
+    bp_block = bp_block.replace(
+        '<section class="block">',
+        '<section class="block" id="sec-behavioral">',
+        1,
+    ) if bp_block else bp_block
+    qw_block = qw_block.replace(
+        '<section class="block quick-wins">',
+        '<section class="block quick-wins" id="sec-quickwins">',
+        1,
+    ) if qw_block else qw_block
+    pp_block = pp_block.replace(
+        '<section class="block">',
+        '<section class="block" id="sec-perproject">',
+        1,
+    ) if pp_block else pp_block
+    notes_html_anchored = notes_html.replace(
+        '<section class="block">',
+        '<section class="block" id="sec-notes">',
+        1,
+    ) if notes_html else notes_html
+
     return f"""
 <section class="view" data-view="findings">
-  {pulse_html}
+  {pulse_above}
   <h1 class="headline">{_esc(headline)}</h1>
+  {pulse_below}
   {callout_html}
+  {section_nav_html}
   {experiments_html}
   {changelog_html}
   {timeline_html}
@@ -1910,7 +2003,7 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
   {bp_block}
   {qw_block}
   {pp_block}
-  {notes_html}
+  {notes_html_anchored}
 </section>
 """
 
@@ -2400,6 +2493,84 @@ table.sessions td .agent-pill {
   padding-bottom: 1px;
 }
 .pulse-jump:hover { color: var(--warm); border-bottom-color: var(--warm); }
+
+/* Slim pulse — used in baseline / no-continuity modes. Tucks below the
+ * H1 instead of dominating the top of page. */
+.pulse-slim {
+  display: block;
+  margin: 8px 0 32px 0;
+  padding: 10px 14px;
+  background: var(--paper);
+  border: 1px dashed var(--line-strong);
+  border-radius: 4px;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--ink-mute);
+  line-height: 1.5;
+}
+.pulse-slim .pulse-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft);
+  margin-right: 4px;
+  margin-bottom: 0;
+}
+.pulse-slim .pulse-date { color: var(--ink-soft); font-weight: 500; }
+.pulse-slim .pulse-provenance {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: none;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-mute);
+}
+
+/* Section jump-nav strip — shows up only when ≥3 sections exist. */
+.section-nav {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 0 0 28px 0;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.section-nav a {
+  color: var(--ink-soft);
+  text-decoration: none;
+  padding: 2px 0;
+  border-bottom: 1px dotted transparent;
+}
+.section-nav a:hover { color: var(--warm); border-bottom-color: var(--warm-soft); }
+
+/* Aggregate strip hierarchy: primary stats (Sessions/Obs/Patterns) big,
+ * secondary stats (Quick wins / Projects / Active min) muted, fab warn
+ * red but only when >0. */
+.aggregate-strip .stat.stat-primary .num {
+  font-size: 36px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.aggregate-strip .stat.stat-secondary .num {
+  font-size: 22px;
+  font-weight: 400;
+  color: var(--ink-soft);
+}
+.aggregate-strip .stat.stat-warn .num {
+  font-size: 22px;
+  color: var(--rust);
+  font-weight: 500;
+}
+.aggregate-strip .stat.stat-secondary .lab,
+.aggregate-strip .stat.stat-warn .lab {
+  color: var(--ink-mute);
+}
 .pulse-provenance {
   margin-top: 12px;
   padding-top: 10px;
