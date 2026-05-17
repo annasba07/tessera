@@ -207,7 +207,10 @@ h1.headline {
   border-radius: 4px;
   border: 1px solid var(--line);
   white-space: pre-wrap;
-  word-break: break-all;
+  /* `break-word` (not `break-all`) keeps mcp__tool_names intact instead
+   * of splitting them mid-character at the line edge. */
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .callout-copy {
   position: absolute;
@@ -1427,16 +1430,17 @@ def _render_changelog_pulse(synthesis: dict) -> str:
         provenance = ""
 
     if not cl.get("compared"):
-        # First-ever run: don't take above-the-fold real estate from the
-        # actual findings. Render as a slim footnote-style strip BELOW
-        # the H1, not a full pulse block. Marked with a sentinel comment
-        # the findings renderer uses to decide placement.
+        # First-ever run: slim strip below the H1. Two-segment layout so
+        # the diff status and the quality check don't run together as
+        # comma-blob prose.
         return (
             '<!--pulse-position:below-headline-->'
             '<aside class="pulse-slim">'
-            '<span class="pulse-label">Since last run</span> · '
-            'First run in history — baseline established. Next run will show diffs. '
-            f'{provenance}'
+            '<div class="pulse-slim-row">'
+            '<span class="pulse-label">Since last run</span>'
+            '<span class="pulse-slim-msg">First run in history — baseline established. Next run will show diffs.</span>'
+            '</div>'
+            f'<div class="pulse-slim-row">{provenance}</div>'
             '</aside>'
         )
 
@@ -1462,15 +1466,16 @@ def _render_changelog_pulse(synthesis: dict) -> str:
     )
     if no_continuity:
         new_total = s.get("obs_new", 0) + s.get("bp_new", 0)
-        # No-continuity mode: slim treatment below the H1. The big H1
-        # carries the actual finding; this is footnote context.
+        # No-continuity mode: two-segment slim layout below the H1.
         return (
             '<!--pulse-position:below-headline-->'
             '<aside class="pulse-slim">'
-            f'<span class="pulse-label">Since last run</span> · '
-            f'Diffing against <span class="pulse-date">{_esc(against)}</span>: '
-            f'{new_total} patterns surfaced, 0 continuing yet. '
-            f'{provenance}'
+            '<div class="pulse-slim-row">'
+            '<span class="pulse-label">Since last run</span>'
+            f'<span class="pulse-slim-msg">Diffing against <span class="pulse-date">{_esc(against)}</span> · '
+            f'{new_total} patterns surfaced, 0 continuing yet.</span>'
+            '</div>'
+            f'<div class="pulse-slim-row">{provenance}</div>'
             '</aside>'
         )
 
@@ -1803,13 +1808,15 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
         )
     obs_html = "".join(obs_html_parts)
     # Behavioral patterns: render strong (comparative) patterns full-width,
-    # collapse demoted non-comparative patterns into a <details> below so
-    # they don't dilute the visual hierarchy. Persona-review fix #3.
+    # collapse demoted non-comparative patterns into a <details> below.
+    # Keep ORIGINAL synthesis index on both groups so cross-references in
+    # other parts of the page stay stable (strong §s skip the gaps where
+    # demoted ones live — e.g. §1, §2, §4, §6...; demoted shows §3, §5, §7).
     strong_bp_parts: list[str] = []
     demoted_bp_parts: list[str] = []
-    for i, bp in enumerate(bp_list, start=1):
+    for orig_idx, bp in enumerate(bp_list, start=1):
         key = _observation_key(bp)
-        rendered = _render_behavioral_pattern(bp, i, bp_key=key)
+        rendered = _render_behavioral_pattern(bp, orig_idx, bp_key=key)
         if bp.get("non_comparative"):
             demoted_bp_parts.append(rendered)
         else:
@@ -1993,8 +2000,8 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
   {pulse_above}
   <h1 class="headline">{_esc(headline)}</h1>
   {pulse_below}
-  {callout_html}
   {section_nav_html}
+  {callout_html}
   {experiments_html}
   {changelog_html}
   {timeline_html}
@@ -2508,18 +2515,30 @@ table.sessions td .agent-pill {
   color: var(--ink-mute);
   line-height: 1.5;
 }
+.pulse-slim-row {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 2px 0;
+}
+.pulse-slim-row + .pulse-slim-row {
+  margin-top: 2px;
+  padding-top: 6px;
+  border-top: 1px dotted var(--line);
+}
 .pulse-slim .pulse-label {
   font-family: var(--mono);
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--ink-soft);
-  margin-right: 4px;
-  margin-bottom: 0;
+  flex-shrink: 0;
+  min-width: 110px;
 }
+.pulse-slim .pulse-slim-msg { color: var(--ink-soft); }
 .pulse-slim .pulse-date { color: var(--ink-soft); font-weight: 500; }
 .pulse-slim .pulse-provenance {
-  display: inline;
+  display: block;
   margin: 0;
   padding: 0;
   border: none;
