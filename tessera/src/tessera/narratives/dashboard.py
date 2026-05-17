@@ -173,6 +173,7 @@ h1.headline {
 }
 
 .callout {
+  position: relative;
   border-left: 3px solid var(--warm);
   background: linear-gradient(180deg, var(--hint), transparent 60%);
   padding: 18px 24px 18px 22px;
@@ -194,6 +195,56 @@ h1.headline {
   line-height: 1.5;
   color: var(--ink);
 }
+/* When the callout body is action-shaped (mentions files/commands/tools),
+ * render mono so config-like content actually looks like config + reads
+ * scannably instead of mid-sentence prose-blur. */
+.callout .body.mono {
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.55;
+  background: var(--paper);
+  padding: 10px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.callout-copy {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  padding: 3px 8px;
+  background: var(--warm);
+  color: #fff;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.callout-copy:hover { background: var(--rust); }
+
+/* Collapsible fold for behavioral patterns the validator demoted as
+ * non-comparative — keeps them inspectable without sucking 50% of the
+ * vertical real estate. Persona-review fix #3. */
+.demoted-fold {
+  margin-top: 24px;
+  padding: 10px 14px;
+  background: #f5f3ec;
+  border: 1px dashed var(--line-strong);
+  border-radius: 4px;
+}
+.demoted-fold summary {
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-mute);
+  letter-spacing: 0.04em;
+  padding: 4px 0;
+}
+.demoted-fold summary:hover { color: var(--ink-soft); }
+.demoted-fold[open] summary { margin-bottom: 12px; }
 
 .aggregate-strip {
   display: grid;
@@ -1469,12 +1520,26 @@ def _render_changelog_pulse(synthesis: dict) -> str:
         '</div>'
     )
 
+    # Only offer the jump link when the detail block will actually render
+    # (i.e., there's at least one non-new signal). Otherwise the link
+    # dangles to a hidden anchor.
+    has_detail = any(
+        s.get(k, 0) > 0
+        for k in (
+            "obs_escalating", "obs_improving", "obs_resolved", "obs_regressed",
+            "bp_escalating", "bp_improving", "bp_resolved", "bp_regressed",
+        )
+    )
+    jump_link = (
+        '<a class="pulse-jump" href="#changelog-detail">See full changelog ↓</a>'
+        if has_detail else ""
+    )
     return (
         '<section class="pulse">'
         f'<div class="pulse-label">Since last run <span class="pulse-date">({_esc(against)})</span></div>'
         f'{big_numbers}'
         f'<div class="pulse-deltas">{cards_html}</div>'
-        '<a class="pulse-jump" href="#changelog-detail">See full changelog ↓</a>'
+        f'{jump_link}'
         f'{provenance}'
         '</section>'
     )
@@ -1507,6 +1572,23 @@ def _render_changelog_block(synthesis: dict) -> str:
         "bp_new", "bp_escalating", "bp_improving", "bp_resolved", "bp_regressed",
     )
     if all(s.get(k, 0) == 0 for k in interesting_keys):
+        return ""
+
+    # If the ONLY signal is `new` items (no continuing/escalating/improving/
+    # resolved/regressed), the pulse already covers it and the main
+    # observation/pattern sections below list the same items. Hide this
+    # block — it would just be a third copy. Persona-review #2 fix.
+    only_new = (
+        (s.get("obs_new", 0) > 0 or s.get("bp_new", 0) > 0)
+        and all(
+            s.get(k, 0) == 0
+            for k in (
+                "obs_escalating", "obs_improving", "obs_resolved", "obs_regressed",
+                "bp_escalating", "bp_improving", "bp_resolved", "bp_regressed",
+            )
+        )
+    )
+    if only_new:
         return ""
 
     against = (cl.get("compared_against_date") or "")[:10]
@@ -1699,11 +1781,32 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
             _render_observation(o, i, cost_minutes=cost, obs_key=key)
         )
     obs_html = "".join(obs_html_parts)
-    bp_html_parts = []
+    # Behavioral patterns: render strong (comparative) patterns full-width,
+    # collapse demoted non-comparative patterns into a <details> below so
+    # they don't dilute the visual hierarchy. Persona-review fix #3.
+    strong_bp_parts: list[str] = []
+    demoted_bp_parts: list[str] = []
     for i, bp in enumerate(bp_list, start=1):
         key = _observation_key(bp)
-        bp_html_parts.append(_render_behavioral_pattern(bp, i, bp_key=key))
-    bp_html = "".join(bp_html_parts)
+        rendered = _render_behavioral_pattern(bp, i, bp_key=key)
+        if bp.get("non_comparative"):
+            demoted_bp_parts.append(rendered)
+        else:
+            strong_bp_parts.append(rendered)
+    bp_html = "".join(strong_bp_parts)
+    if demoted_bp_parts:
+        bp_html += (
+            f'<details class="demoted-fold">'
+            f'<summary>'
+            f'Show {len(demoted_bp_parts)} descriptive observation(s) the validator '
+            f'flagged as non-comparative (no X-vs-Y framing — kept for inspection, '
+            f'don\'t treat as patterns)'
+            f'</summary>'
+            f'{"".join(demoted_bp_parts)}'
+            f'</details>'
+        )
+    strong_bp_count = len(strong_bp_parts)
+    demoted_bp_count = len(demoted_bp_parts)
     qw_html = "".join(_render_quick_win(q) for q in qw_list)
     pp_html = "".join(_render_project_card(p) for p in pp_list)
     timeline_html = _render_timeline(meta.get("timeline") or {})
@@ -1717,10 +1820,29 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
 
     callout_html = ""
     if one_thing:
+        # If the body looks like an actionable config/command edit (mentions
+        # a file path, a tool-name pattern, or wraps content in backticks),
+        # render with a copy button so the user can apply it in one click
+        # instead of selecting prose. Persona-review fix #1.
+        action_signal = any(
+            sig in one_thing
+            for sig in (
+                ".claude/settings.json", ".claude/skills/", "CLAUDE.md",
+                "AGENTS.md", "pyproject.toml", "package.json", "render.yaml",
+                "mcp__", "`", "pip install", "git ", "npm ", "uv ", "$ ",
+            )
+        )
+        copy_attr = _esc(one_thing.replace('"', "&quot;"))
+        body_classes = "body mono" if action_signal else "body"
+        copy_btn = (
+            f'<button class="copy callout-copy" data-copy="{copy_attr}">COPY</button>'
+            if action_signal else ""
+        )
         callout_html = (
             '<div class="callout">'
             '<div class="label">If you do one thing this week</div>'
-            f'<div class="body">{_esc(one_thing)}</div>'
+            f'{copy_btn}'
+            f'<div class="{body_classes}">{_esc(one_thing)}</div>'
             "</div>"
         )
 
@@ -1745,9 +1867,13 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
         if obs_html
         else ""
     )
+    bp_count_chip = (
+        f'<span class="count">({strong_bp_count}'
+        f'{f" + {demoted_bp_count} demoted" if demoted_bp_count else ""})</span>'
+    )
     bp_block = (
         '<section class="block">'
-        f'<h2 class="section-title">Behavioral patterns <span class="count">({len(bp_list)})</span> '
+        f'<h2 class="section-title">Behavioral patterns {bp_count_chip} '
         '<span class="section-sub">— how you work, comparative & experiments to try</span></h2>'
         f"{bp_html}"
         "</section>"
