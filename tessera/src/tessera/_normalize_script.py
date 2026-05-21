@@ -989,11 +989,26 @@ def main():
     )
     args = parser.parse_args()
 
+    from . import normalizers as _norm
+
+    warnings = _norm.initialize()
+    for w in warnings:
+        print(f"warning: {w}", file=__import__("sys").stderr)
+
     writer = EventWriter(args.output_dir, args.max_text_chars)
     try:
-        normalize_codex(args.raw_root, writer)
-        normalize_claude(args.raw_root, writer)
-        normalize_gemini(args.raw_root, writer)
+        for n in _norm.get_all():
+            try:
+                n.normalize(args.raw_root, writer)
+            except Exception as exc:
+                # One broken normalizer shouldn't kill the run — surface
+                # the failure and continue with the rest. User-defined
+                # normalizers are most likely to misbehave here.
+                print(
+                    f"warning: normalizer {n.name!r} ({n.source}) raised "
+                    f"{type(exc).__name__}: {exc}",
+                    file=__import__("sys").stderr,
+                )
     finally:
         writer.close()
 

@@ -107,6 +107,53 @@ def _run_command(args: argparse.Namespace) -> int:
             )
             return 2
 
+        # First-run pre-flight: when there's no history yet, show the
+        # user what they're about to spend and let them bail. After the
+        # first run, narratives cache and re-runs are cheap, so we skip
+        # the prompt.
+        history_dir = Path(args.history_dir).expanduser()
+        is_first_run = (
+            not (history_dir / "history.json").exists()
+            and not args.no_prompt
+            and not args.no_history
+            and sys.stdin.isatty()
+        )
+        if is_first_run:
+            est_cost = len(target_ids) * 0.05 + 1.50
+            est_minutes = max(5, len(target_ids) // args.concurrency)
+            print(file=sys.stderr)
+            print(
+                f"  First run — about to extract narratives from {len(target_ids)} sessions.",
+                file=sys.stderr,
+            )
+            print(
+                f"    Estimated cost: ~${est_cost:.0f}  (cached re-runs are ~$1-2)",
+                file=sys.stderr,
+            )
+            print(
+                f"    Estimated wall clock: ~{est_minutes} min",
+                file=sys.stderr,
+            )
+            print(
+                f"    Token usage routes through your `claude` CLI auth (no separate billing).",
+                file=sys.stderr,
+            )
+            if len(target_ids) > 150:
+                print(
+                    f"    Tip: heavy first run. Consider --limit 100 to bound cost; "
+                    f"narratives cache so a second run with --limit 0 only pays the delta.",
+                    file=sys.stderr,
+                )
+            try:
+                reply = input("  Continue? [Y/n]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print(" → cancelled.", file=sys.stderr)
+                return 130
+            if reply and reply not in ("y", "yes"):
+                print("  Cancelled. (Pass --no-prompt to skip this check in scripts.)", file=sys.stderr)
+                return 0
+            print(file=sys.stderr)
+
         print(
             f"[3/4] Extracting per-session narratives via {args.model} "
             f"(concurrency={args.concurrency})...",
@@ -880,6 +927,118 @@ def _enrich_outcomes_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _doctor_command(args: argparse.Namespace) -> int:
+    """Pre-flight diagnostic: shows what tessera can see + estimates a run.
+
+    Goal: a first-time user runs `tessera doctor` and sees, before spending
+    a dollar, exactly which agent traces are visible, how many sessions
+    qualify, what the LLM cost looks like, and which CLIs are missing.
+    """
+    import shutil
+    import subprocess
+    from . import normalizers as _norm
+    from .history import HistoryStore
+
+    warnings = _norm.initialize()
+    print("\nTessera diagnostic")
+    print("=" * 60)
+
+    # 1. Required: claude CLI
+    print("\nLLM backend (Claude CLI):")
+    claude_path = shutil.which("claude")
+    if not claude_path:
+        print("  ✗ `claude` CLI not on PATH — required for narrate + synthesize.")
+        print("    Install: https://docs.claude.com/en/docs/claude-code/setup")
+        claude_ok = False
+    else:
+        try:
+            ver = subprocess.run(
+                ["claude", "--version"], capture_output=True, text=True, timeout=5
+            )
+            ver_str = (ver.stdout or ver.stderr).strip().splitlines()[0] if ver.returncode == 0 else "(version check failed)"
+        except Exception:
+            ver_str = "(version check failed)"
+        print(f"  ✓ {claude_path}  ({ver_str})")
+        claude_ok = True
+
+    # 2. Optional: gh CLI for richer outcome enrichment
+    print("\nOutcome enrichment (gh CLI, optional):")
+    gh_path = shutil.which("gh")
+    if not gh_path:
+        print("  - gh CLI not installed → PR outcome data will be skipped (git-only mode still works).")
+    else:
+        try:
+            gh_auth = subprocess.run(
+                ["gh", "auth", "status"], capture_output=True, text=True, timeout=5
+            )
+            authed = gh_auth.returncode == 0
+        except Exception:
+            authed = False
+        print(f"  {'✓' if authed else '⚠'} {gh_path}  ({'authenticated' if authed else 'not authenticated — `gh auth login`'})")
+
+    # 3. Registered normalizers + how many sessions each sees
+    print(f"\nRegistered agent normalizers ({len(_norm.get_all())}):")
+    total_sessions = 0
+    for n in _norm.get_all():
+        src_label = f"[{n.source}]" if n.source != "builtin" else ""
+        exists = n.default_source.exists()
+        marker = "✓" if exists else "—"
+        sessions_estimate = ""
+        if exists:
+            try:
+                # Cheap upper-bound count by file pattern per known agent
+                if n.name == "claude":
+                    cnt = sum(1 for _ in n.default_source.rglob("*.jsonl"))
+                elif n.name == "codex":
+                    cnt = sum(1 for _ in n.default_source.rglob("rollout-*.jsonl"))
+                elif n.name == "gemini":
+                    cnt = sum(1 for p in n.default_source.rglob("*") if p.is_file())
+                else:
+                    cnt = sum(1 for p in n.default_source.rglob("*") if p.is_file())
+                sessions_estimate = f"  ~{cnt} raw trace files"
+                total_sessions += cnt
+            except Exception:
+                sessions_estimate = "  (count failed)"
+        print(f"  {marker} {n.name:<10} {src_label:<12} {n.default_source}{sessions_estimate}")
+        if n.description:
+            print(f"      {n.description}")
+
+    # 4. Loader warnings (failed user-dir / entry-point imports)
+    if warnings:
+        print("\n⚠  Normalizer loader warnings:")
+        for w in warnings:
+            print(f"  {w}")
+
+    # 5. History store + cache state
+    print("\nLocal state:")
+    history = HistoryStore()
+    runs = history._read_index()
+    print(f"  History: {len(runs)} prior run(s) at {history.data_dir}")
+    cache_dir = Path.home() / ".cache" / "tessera" / "narratives"
+    cached_narratives = sum(1 for _ in cache_dir.glob("*.json")) if cache_dir.exists() else 0
+    print(f"  Narrative cache: {cached_narratives} cached at {cache_dir}")
+
+    # 6. Cost estimate
+    print("\nRough cost estimate for `tessera run --lookback-days 30 --min-events 10`:")
+    print("  (this is an upper-bound — most sessions hit the cache after the first run)")
+    # Heuristic: assume ~30-40% of raw trace files qualify after min_events filter,
+    # then ~$0.05/session for narrative + ~$1 for synthesis
+    qualifying_est = max(1, int(total_sessions * 0.35))
+    cold_cost = qualifying_est * 0.05 + 1.50
+    cached_cost = 0.50 + 1.50
+    print(f"  Cold run (all sessions fresh):     ~${cold_cost:.0f}  ({qualifying_est} sessions × ~$0.05 + ~$1.50 synth)")
+    print(f"  Cached run (most narratives hit):  ~${cached_cost:.0f}")
+    print(f"  Wall clock: ~{max(5, qualifying_est // 10)} min cold, ~5 min cached")
+
+    print()
+    if not claude_ok:
+        print("⚠  Fix the missing `claude` CLI before running anything else.")
+        return 1
+    print("Looks good — run `tessera run --lookback-days 30 --min-events 10`")
+    print("(add `--limit 100` to bound cost on a heavy corpus)")
+    return 0
+
+
 def _eval_command(args: argparse.Namespace) -> int:
     from .narratives.eval import (
         evaluate_narratives,
@@ -1054,6 +1213,9 @@ def main(argv: list[str] | None = None) -> int:
                      help="How many prior runs to feed back into the synthesis prompt.")
     run.add_argument("--no-history", action="store_true",
                      help="Skip prior-run context and don't save to history.")
+    run.add_argument("--no-prompt", action="store_true",
+                     help="Skip the first-run cost-estimate confirmation prompt "
+                     "(useful for cron/scripts).")
     run.set_defaults(func=_run_command)
 
     # ---- rate ----
@@ -1181,6 +1343,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     eval_parser.add_argument("--format", choices=["text", "json"], default="text")
     eval_parser.set_defaults(func=_eval_command)
+
+    # ---- doctor ----
+    doctor = sub.add_parser(
+        "doctor",
+        help="Diagnose tessera setup — checks LLM CLI, agent traces, "
+        "registered normalizers (built-in + user-added), prior runs, "
+        "and gives a cost estimate for the next run. Run this before "
+        "`tessera run` on a new machine.",
+    )
+    doctor.set_defaults(func=_doctor_command)
 
     # ---- changelog ----
     changelog = sub.add_parser(

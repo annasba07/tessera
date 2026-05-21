@@ -52,7 +52,7 @@ Two LLM stages, both via your local `claude` CLI:
 1. **Per-session narrative** — each session's compressed event stream (~30-50K tokens) gets one Sonnet 4.6 call producing structured narrative (goal, tasks, friction moments, key decisions, dead ends, recurring env issues, counterfactual). Cached by content hash; re-runs skip unchanged sessions.
 2. **Cross-session synthesis** — all narratives compacted to high-signal fields (~150K tokens), one Sonnet 4.6 call producing observations + quick wins + per-project headlines. Validator drops any cited ref not in the input set.
 
-See [docs/schema/v1.md](docs/schema/v1.md) for the full per-session schema and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for module-level flow.
+See [docs/schema/v1.md](docs/schema/v1.md) for the full per-session schema, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for module-level flow, and [docs/adding-an-agent.md](docs/adding-an-agent.md) to plug in your own agent CLI (Aider, Cline, Cursor, etc.) as a single Python file in `~/.config/tessera/normalizers/`.
 
 ## Install
 
@@ -67,6 +67,17 @@ uv tool install tessera-agents
 > The PyPI package is `tessera-agents` (the bare name `tessera` was taken). The CLI binary, slash command, and import are all just `tessera`.
 
 ## Use
+
+### First run (do this once)
+
+```bash
+tessera doctor             # ~2s. checks `claude` CLI, agent trace dirs, gives a cost estimate.
+tessera run --lookback-days 30 --min-events 10
+# → prompts you to confirm estimated cost before the LLM stage
+# → opens synthesis.html when done
+```
+
+A heavy first run (250+ sessions) can hit $10-15. The pre-flight prompt tells you the number before you commit; pass `--limit 100` to bound it.
 
 ### Weekly retrospective (the main flow)
 
