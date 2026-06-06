@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Tessera weekly heartbeat (macOS launchd job).
+
+  Fires every Monday at 9:00 local time:
+    tessera weekly  (which runs analysis → evaluates active experiments
+                     → opens the dashboard)
+
+  Install:
+    cp launchd/com.tessera.weekly.plist ~/Library/LaunchAgents/
+    # Replace YOUR_USERNAME with `whoami` output, e.g. via:
+    sed -i '' "s|YOUR_USERNAME|$(whoami)|g" ~/Library/LaunchAgents/com.tessera.weekly.plist
+    launchctl load ~/Library/LaunchAgents/com.tessera.weekly.plist
+
+  Verify:
+    launchctl list | grep com.tessera.weekly      # should show the job
+    tail -f ~/tessera-weekly/launchd.log         # streams next-run output
+
+  Unload:
+    launchctl unload ~/Library/LaunchAgents/com.tessera.weekly.plist
+
+  Customize the schedule by editing the StartCalendarInterval below.
+  Common alternatives:
+    - Sunday evening:     <key>Weekday</key><integer>0</integer><key>Hour</key><integer>20</integer>
+    - Every weekday 9am:  remove <key>Weekday</key> entry entirely
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.tessera.weekly</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Wrap in `sh -lc` so the user's PATH from .zshrc / .bash_profile
+             is available, and `tessera` resolves whether it was installed
+             via pip, uv tool, or homebrew. -->
+        <string>/bin/sh</string>
+        <string>-lc</string>
+        <string>tessera weekly --no-open</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- launchd inherits a minimal PATH by default — explicitly include
+             where pip/uv/homebrew install tessera. -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/Users/YOUR_USERNAME/.local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <!-- Mondays at 9am. Day-of-week: 0=Sun, 1=Mon, ..., 6=Sat. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>1</integer>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <!-- Log stdout + stderr to the weekly output dir for easy tailing. -->
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USERNAME/tessera-weekly/launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USERNAME/tessera-weekly/launchd.log</string>
+
+    <!-- Run even if the Mac was asleep at the scheduled time. -->
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

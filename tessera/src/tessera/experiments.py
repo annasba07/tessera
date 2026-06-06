@@ -232,6 +232,16 @@ def register_from_ratings(
             continue
         store.upsert(exp)
         registered.append(exp)
+        # Audit log — defensive import so a missing logbook doesn't break
+        # the registration flow.
+        try:
+            from .logbook import default as _logbook_default
+            _logbook_default().log_experiment_registered(
+                exp_id=exp.id, key=exp.pattern_key, title=exp.title,
+                dimension=exp.dimension,
+            )
+        except Exception:
+            pass
     return registered
 
 
@@ -322,25 +332,55 @@ def evaluate_pending(
         exp.evaluations.append(eval_result)
         summary["evaluated"] += 1
 
+        # Audit log: the evaluation itself
+        try:
+            from .logbook import default as _logbook_default
+            _logbook_default().log_experiment_evaluated(
+                exp_id=exp.id, title=exp.title,
+                adherence=eval_result.get("adherence", "unknown"),
+                effect=eval_result.get("effect", "unknown"),
+                adherence_evidence=eval_result.get("adherence_evidence", ""),
+                effect_evidence=eval_result.get("effect_evidence", ""),
+                recommendation=eval_result.get("recommendation", ""),
+                method=eval_result.get("method", "llm"),
+                post_baseline_session_count=len(post),
+            )
+        except Exception:
+            pass
+
         # Status transition based on the eval result fields the LLM should
         # populate: adherence ∈ {none, partial, full, unknown},
         # effect ∈ {positive, neutral, negative, unknown}
         adherence = eval_result.get("adherence", "unknown")
         effect = eval_result.get("effect", "unknown")
+        new_status: str | None = None
         if adherence == "none":
             exp.status = "not_tried"
             summary["marked_not_tried"].append(exp.id)
+            new_status = "not_tried"
         elif effect == "positive" and adherence in ("partial", "full"):
             exp.status = "graduated"
             summary["graduated"].append(exp.id)
+            new_status = "graduated"
         elif (
             len(exp.evaluations) >= EVALS_BEFORE_INCONCLUSIVE
             and effect in ("neutral", "negative", "unknown")
         ):
             exp.status = "inconclusive"
             summary["marked_inconclusive"].append(exp.id)
+            new_status = "inconclusive"
         else:
             summary["still_active"].append(exp.id)
+
+        # Audit log: status transition (only if one happened)
+        if new_status:
+            try:
+                from .logbook import default as _logbook_default
+                _logbook_default().log_experiment_transition(
+                    new_status=new_status, exp_id=exp.id, title=exp.title,
+                )
+            except Exception:
+                pass
 
         store.upsert(exp)
     return summary

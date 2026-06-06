@@ -79,11 +79,46 @@ tessera run --lookback-days 30 --min-events 10
 
 A heavy first run (250+ sessions) can hit $10-15. The pre-flight prompt tells you the number before you commit; pass `--limit 100` to bound it.
 
-### Weekly retrospective (the main flow)
+### The closed loop: `tessera weekly` (the main habit)
+
+```bash
+tessera weekly             # last 7 days, ~5 min cached
+# 1. Narrates new sessions + synthesizes patterns
+# 2. Evaluates every active experiment from prior weeks:
+#    "did the user actually try this? did dead-ends drop?"
+# 3. Opens the dashboard
+```
+
+What you do on the dashboard each Monday (~10 min):
+1. Read the "Last week's experiments" verdicts at top (graduated / not tried / inconclusive)
+2. Skim "Since last run" deltas (new / escalating / resolved)
+3. Click `[useful]` on 1–3 behavioral patterns you commit to trying this week
+4. Click `SAVE`, paste the one-liner — those patterns are now active experiments
+
+Next week, tessera will evaluate whether the patterns you committed to actually moved the needle. **This is the self-improving loop**: insight → commitment → measured outcome → next insight, every week.
+
+Automate it via launchd (Mondays 9am):
+```bash
+cp launchd/com.tessera.weekly.plist ~/Library/LaunchAgents/
+sed -i '' "s|YOUR_USERNAME|$(whoami)|g" ~/Library/LaunchAgents/com.tessera.weekly.plist
+launchctl load ~/Library/LaunchAgents/com.tessera.weekly.plist
+```
+
+### Auditing the loop
+
+Every recommendation, every rating, every evaluation lands in an append-only logbook at `~/.config/tessera/logbook.jsonl`. View it:
+
+```bash
+tessera logbook --summary           # aggregate stats: acceptance + graduation rate
+tessera logbook --event insight.surfaced --tail 20
+tessera logbook --json | jq '...'   # programmatic queries
+```
+
+### One-off retrospective (the original mode)
 
 ```bash
 tessera run                # last 30 days, ~5min cached / ~50min cold
-open synthesis.html              # read findings, drill in, rate inline
+open synthesis.html        # read findings, drill in, rate inline
 ```
 
 After rating: click the floating `SAVE` button on the dashboard, paste the resulting one-liner in your terminal. Ratings feed the next run's synthesis prompt and the in-session coach (see below).

@@ -164,8 +164,8 @@ Return ONE JSON object. No markdown fence. No preamble:
 - Cap evidence at 8 refs per observation/pattern. If more support exists, pick the 8 most representative.
 - Don't pad. If you only find 4 strong operational observations and 3 behavioral patterns, return 4 and 3. Better sharp than padded. Quality > count, always.
 - **Pattern targets** (these are floors, not ceilings — surface every distinct pattern the data supports):
-  - `observations` (operational): aim for 8-15. Don't merge unrelated friction sources just to hit a number; don't pad either.
-  - `behavioral_patterns`: **aim for 15-25 if the data supports it**. The data here covers 152 sessions and ~300 hours of work — there are many distinct behavioral patterns to surface, not just one per dimension. Push past the first 5 obvious ones into the second-tier patterns: micro-habits, domain-specific tendencies, time-of-day variation within prompting style, comparative differences between projects, contradictions between stated and revealed preferences. Each `dimension` value can support multiple distinct patterns (e.g., 3-4 different `prompting_style` patterns is fine if they're genuinely distinct).
+  - `observations` (operational): aim for 6-12. Don't merge unrelated friction sources just to hit a number; don't pad either. Prefer fewer-but-sharper.
+  - `behavioral_patterns`: **aim for 8-15 strong comparative patterns**. Each `dimension` value can support multiple distinct patterns (3 different `prompting_style` patterns is fine if they're genuinely distinct). Output budget caps at ~8K tokens; if you have more candidates than budget, drop the weakest evidence first rather than truncating fields. **Crucially: a complete short pattern is more valuable than a truncated detailed one.**
 - Confidence:
   - **high** = ≥5 supporting refs, clear pattern, comparison-supported claim
   - **medium** = 3-4 supporting refs, or 5+ with noise/edge cases

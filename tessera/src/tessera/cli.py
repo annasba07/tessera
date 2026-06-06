@@ -270,6 +270,37 @@ def _run_command(args: argparse.Namespace) -> int:
                 f"       → saved to history ({record.slug}).",
                 file=sys.stderr,
             )
+            # Audit log: run completed + every insight surfaced
+            try:
+                from .logbook import default as _logbook_default
+                _lb = _logbook_default()
+                _lb.log_run_completed(
+                    run_slug=record.slug,
+                    narratives_processed=len(narratives),
+                    observations_count=len(synthesis.get("observations") or []),
+                    behavioral_patterns_count=len(synthesis.get("behavioral_patterns") or []),
+                    fabricated_refs=synthesis.get("meta", {}).get("fabricated_ref_count", 0),
+                )
+                from .history import _observation_key
+                for o in synthesis.get("observations") or []:
+                    _lb.log_insight(
+                        run_slug=record.slug, kind="observation",
+                        key=_observation_key(o), title=o.get("title", ""),
+                        confidence=o.get("confidence"),
+                        supporting_count=o.get("supporting_count", 0),
+                        category_or_dimension=o.get("category"),
+                    )
+                for bp in synthesis.get("behavioral_patterns") or []:
+                    _lb.log_insight(
+                        run_slug=record.slug, kind="behavioral_pattern",
+                        key=_observation_key(bp), title=bp.get("title", ""),
+                        confidence=bp.get("confidence"),
+                        supporting_count=bp.get("supporting_count", 0),
+                        category_or_dimension=bp.get("dimension"),
+                        non_comparative=bool(bp.get("non_comparative")),
+                    )
+            except Exception:
+                pass
         except Exception as exc:
             print(f"warning: history save failed: {exc}", file=sys.stderr)
 
@@ -761,6 +792,21 @@ def _rate_import_command(args: argparse.Namespace) -> int:
     store.save_ratings(slug, cleaned)
     summary = Counter(c["rating"] for c in cleaned)
 
+    # Audit log: every rating event (accepted = recommendation.accepted,
+    # other = recommendation.declined)
+    try:
+        from .logbook import default as _logbook_default
+        _lb = _logbook_default()
+        for r in cleaned:
+            _lb.log_rating(
+                run_slug=slug,
+                key=r.get("key") or "",
+                title=r.get("title") or "",
+                rating=r["rating"],
+            )
+    except Exception:
+        pass
+
     # Self-experiment registration: any `useful` rating that resolves to a
     # behavioral_pattern in the rated run becomes an active experiment.
     # Lookup is by key (stable across runs) — works even if the user rates
@@ -924,6 +970,195 @@ def _enrich_outcomes_command(args: argparse.Namespace) -> int:
         print("  Outcome signal distribution:", file=sys.stderr)
         for sig, count in summary["signal_counts"].items():
             print(f"    {sig}: {count}", file=sys.stderr)
+    return 0
+
+
+def _logbook_command(args: argparse.Namespace) -> int:
+    """Read the append-only loop audit log.
+
+    Three modes:
+      --tail N        last N entries (default 20)
+      --since DATE    entries since YYYY-MM-DD
+      --event TYPE    filter by event type (run.started, insight.surfaced, ...)
+      --json          raw jsonl output (no formatting, for piping into jq)
+    """
+    from .logbook import default as _logbook_default
+    from collections import Counter
+
+    lb = _logbook_default()
+
+    events = list(lb.iter_events(
+        event_type=args.event,
+        since=args.since,
+    ))
+    if args.tail and args.tail > 0:
+        events = events[-args.tail:]
+
+    if args.json:
+        for ev in events:
+            print(json.dumps(ev, ensure_ascii=False))
+        return 0
+
+    if args.summary:
+        # Group by event type + show counts
+        counts = Counter(ev.get("event", "?") for ev in events)
+        print(f"\nLogbook at {lb.path}")
+        print(f"  Total entries: {len(events)}")
+        print("  By event type:")
+        for ev_type, count in counts.most_common():
+            print(f"    {count:>5}  {ev_type}")
+        # Acceptance rate
+        accepted = counts.get("recommendation.accepted", 0)
+        declined = counts.get("recommendation.declined", 0)
+        if accepted + declined > 0:
+            print(f"  Acceptance rate: {accepted}/{accepted + declined} ratings = {accepted/(accepted+declined)*100:.0f}%")
+        # Graduation rate
+        evald = counts.get("experiment.evaluated", 0)
+        grad = counts.get("experiment.graduated", 0)
+        nope = counts.get("experiment.marked_not_tried", 0)
+        if evald > 0:
+            print(f"  Evaluation outcomes: {grad} graduated, {nope} not-tried, {counts.get('experiment.marked_inconclusive', 0)} inconclusive (of {evald} total evals)")
+        return 0
+
+    # Default: human-readable timeline
+    for ev in events:
+        ts = (ev.get("ts") or "")[:19].replace("T", " ")
+        et = ev.get("event", "?")
+        if et == "run.started":
+            print(f"  {ts}  run.started     {ev.get('run_slug', '?')[:16]}  lookback={ev.get('lookback_days')}d")
+        elif et == "run.completed":
+            print(f"  {ts}  run.completed   {ev.get('run_slug', '?')[:16]}  {ev.get('narratives_processed')} sessions → {ev.get('observations_count')} obs + {ev.get('behavioral_patterns_count')} bp")
+        elif et == "insight.surfaced":
+            tag = "bp" if ev.get("kind") == "behavioral_pattern" else "obs"
+            nc = " · nc" if ev.get("non_comparative") else ""
+            print(f"  {ts}  insight.{tag:<3}    [{ev.get('confidence') or '?':<6}·{(ev.get('category_or_dimension') or '?'):<22}·{ev.get('supporting_count', 0):>2}s]{nc}  {(ev.get('title') or '')[:80]}")
+        elif et == "recommendation.accepted":
+            print(f"  {ts}  ✓ accepted       {(ev.get('title') or '')[:80]}")
+        elif et == "recommendation.declined":
+            print(f"  {ts}  ✗ declined({ev.get('rating')})  {(ev.get('title') or '')[:80]}")
+        elif et == "experiment.registered":
+            print(f"  {ts}  exp.registered  [{ev.get('dimension') or '?':<22}]  {(ev.get('title') or '')[:80]}")
+        elif et == "experiment.evaluated":
+            adh = ev.get("adherence", "?")
+            eff = ev.get("effect", "?")
+            print(f"  {ts}  exp.evaluated   adherence={adh:<7} effect={eff:<8}  {(ev.get('title') or '')[:60]}")
+        elif et in ("experiment.graduated", "experiment.marked_not_tried", "experiment.marked_inconclusive"):
+            label = et.replace("experiment.", "")
+            print(f"  {ts}  → {label:<18} {(ev.get('title') or '')[:70]}")
+        else:
+            print(f"  {ts}  {et:<22}  {json.dumps({k:v for k,v in ev.items() if k not in ('ts','event','schema_version','event_id')}, ensure_ascii=False)[:160]}")
+    if not events:
+        print("\n  (no logbook entries match — start by running `tessera run` or `tessera weekly`)\n")
+    return 0
+
+
+def _weekly_command(args: argparse.Namespace) -> int:
+    """The closed loop, one command:
+
+      1. tessera run --lookback-days 7 (narrate + synth + render)
+      2. tessera evaluate-experiments (LLM-judges each active experiment
+         against this week's narratives; transitions status)
+      3. open the dashboard so the user can see results + accept up to N
+         new experiments for next week
+
+    Designed to be run from launchd / cron weekly. Single command means
+    nothing for the user to remember; the loop is self-driving.
+    """
+    import subprocess
+    from .history import HistoryStore
+    from .experiments import ExperimentStore, evaluate_pending
+
+    # 1. Run the analysis pass
+    print("\n=== Tessera weekly · step 1/3: analysis ===\n", file=sys.stderr)
+    run_args = argparse.Namespace(
+        lookback_days=args.lookback_days,
+        max_age_days=None,
+        min_events=args.min_events,
+        min_sessions=args.min_sessions,
+        limit=args.limit,
+        model=args.model,
+        concurrency=args.concurrency,
+        force=False,
+        output=str(Path(args.output_dir).expanduser() / "synthesis.json"),
+        narratives_dir=str(Path(args.output_dir).expanduser() / "narratives"),
+        cache_dir=None,
+        format="text",
+        history_dir=args.history_dir,
+        prior_runs=3,
+        no_history=False,
+        no_prompt=True,  # cron-friendly
+        claude_projects=None,
+        codex_sessions=None,
+        gemini_tmp=None,
+        gemini_projects_json=None,
+        max_text_chars=2000,
+        project=None,
+    )
+    Path(args.output_dir).expanduser().mkdir(parents=True, exist_ok=True)
+    rc = _run_command(run_args)
+    if rc != 0:
+        print(f"weekly: analysis stage failed (exit {rc}) — aborting evaluation + open", file=sys.stderr)
+        return rc
+
+    # 2. Evaluate active experiments against this week's narratives
+    print("\n=== Tessera weekly · step 2/3: experiment evaluation ===\n", file=sys.stderr)
+    exp_store = ExperimentStore()
+    active = exp_store.list("active")
+    if not active:
+        print("  No active experiments to evaluate.", file=sys.stderr)
+    else:
+        print(f"  Evaluating {len(active)} active experiment(s)...", file=sys.stderr)
+        # Load this run's narratives
+        from .narratives.synthesis import load_narratives
+        narratives_dir = Path(args.output_dir).expanduser() / "narratives"
+        narratives = load_narratives(narratives_dir)
+        if args.skip_eval:
+            print("  --skip-eval set; using offline heuristic (no LLM call).", file=sys.stderr)
+            summary = evaluate_pending(narratives, exp_store)
+        else:
+            from .experiment_evaluator import make_callable
+            summary = evaluate_pending(narratives, exp_store, llm_evaluator=make_callable(args.model))
+        print(f"  Evaluated: {summary['evaluated']}", file=sys.stderr)
+        if summary.get("graduated"):
+            print(f"  ✓ Graduated: {len(summary['graduated'])}", file=sys.stderr)
+            for eid in summary["graduated"]:
+                exp = exp_store.get(eid)
+                if exp:
+                    print(f"      · {exp.title}", file=sys.stderr)
+        if summary.get("marked_not_tried"):
+            print(f"  ✗ Marked not tried: {len(summary['marked_not_tried'])}", file=sys.stderr)
+            for eid in summary["marked_not_tried"]:
+                exp = exp_store.get(eid)
+                if exp:
+                    print(f"      · {exp.title}", file=sys.stderr)
+        if summary.get("marked_inconclusive"):
+            print(f"  · Inconclusive after 2+ neutral evals: {len(summary['marked_inconclusive'])}", file=sys.stderr)
+        if summary.get("still_active"):
+            print(f"  · Still active: {len(summary['still_active'])}", file=sys.stderr)
+        if summary.get("skipped_no_post_baseline_data"):
+            print(
+                f"  · Skipped (no post-baseline narratives yet): {len(summary['skipped_no_post_baseline_data'])}",
+                file=sys.stderr,
+            )
+
+    # 3. Open the rendered dashboard for review + accept-experiments-by-rating
+    print("\n=== Tessera weekly · step 3/3: dashboard ===\n", file=sys.stderr)
+    dashboard = Path(args.output_dir).expanduser() / "synthesis.html"
+    if dashboard.exists() and not args.no_open:
+        try:
+            subprocess.run(["open", str(dashboard)], check=False, timeout=5)
+            print(f"  Opened {dashboard}", file=sys.stderr)
+        except Exception as exc:
+            print(f"  Could not auto-open ({exc}); open manually: {dashboard}", file=sys.stderr)
+    else:
+        print(f"  Dashboard at: {dashboard}", file=sys.stderr)
+
+    print(
+        "\n  Click [useful] on behavioral patterns you commit to trying this week."
+        "\n  Click SAVE → paste the one-liner in terminal to register experiments."
+        "\n  Next week's `tessera weekly` will evaluate whether they worked.",
+        file=sys.stderr,
+    )
     return 0
 
 
@@ -1353,6 +1588,58 @@ def main(argv: list[str] | None = None) -> int:
         "`tessera run` on a new machine.",
     )
     doctor.set_defaults(func=_doctor_command)
+
+    # ---- logbook (append-only audit) ----
+    log = sub.add_parser(
+        "logbook",
+        help="View the append-only audit log of the self-improving loop "
+        "(runs, insights surfaced, recommendations accepted/declined, "
+        "experiments registered/evaluated/graduated). "
+        "Stored at ~/.config/tessera/logbook.jsonl; override via "
+        "TESSERA_LOGBOOK env var.",
+    )
+    log.add_argument("--tail", type=int, default=20,
+                    help="Show last N entries (default 20).")
+    log.add_argument("--since", default=None,
+                    help="Show entries since YYYY-MM-DD (ISO 8601).")
+    log.add_argument("--event", default=None,
+                    help="Filter by event type (e.g. insight.surfaced, "
+                    "recommendation.accepted, experiment.evaluated).")
+    log.add_argument("--summary", action="store_true",
+                    help="Show aggregate counts + acceptance/graduation rates.")
+    log.add_argument("--json", action="store_true",
+                    help="Raw JSONL output for piping into jq.")
+    log.set_defaults(func=_logbook_command)
+
+    # ---- weekly (the closed loop) ----
+    weekly = sub.add_parser(
+        "weekly",
+        help="The closed-loop weekly heartbeat: run analysis → evaluate "
+        "active experiments against this week's data → open dashboard. "
+        "Designed for launchd / cron. After review, rate behavioral "
+        "patterns [useful] to commit experiments for the following week.",
+    )
+    weekly.add_argument("--lookback-days", type=int, default=7,
+                        help="Window to analyze (default: 7 = last week).")
+    weekly.add_argument("--min-events", type=int, default=10,
+                        help="Min normalized events for a session to qualify.")
+    weekly.add_argument("--min-sessions", type=int, default=5,
+                        help="Abort if fewer than this many sessions qualify.")
+    weekly.add_argument("--limit", type=int, default=0,
+                        help="Cap at N most-recent qualifying sessions (0 = no cap).")
+    weekly.add_argument("--model", default=DEFAULT_NARRATIVE_MODEL,
+                        help="LLM model for narration + synthesis + experiment eval.")
+    weekly.add_argument("--concurrency", type=int, default=10,
+                        help="Parallel per-session narrative extractions.")
+    weekly.add_argument("--output-dir", default="~/tessera-weekly",
+                        help="Where the run's synthesis + narratives + dashboard land.")
+    weekly.add_argument("--history-dir", default=str(DEFAULT_DATA_DIR),
+                        help="History store location.")
+    weekly.add_argument("--skip-eval", action="store_true",
+                        help="Skip the LLM evaluator pass (use offline heuristic instead).")
+    weekly.add_argument("--no-open", action="store_true",
+                        help="Don't auto-open the dashboard (useful for headless / cron).")
+    weekly.set_defaults(func=_weekly_command)
 
     # ---- changelog ----
     changelog = sub.add_parser(
