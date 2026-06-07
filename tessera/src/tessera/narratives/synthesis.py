@@ -533,6 +533,49 @@ def _extract_json(raw: str) -> dict:
         text = fence.group(1).strip()
     try:
         return json.loads(text)
+    except json.JSONDecodeError:
+        # Recovery: Sonnet occasionally collapses mid-output and restarts,
+        # leaving partial corrupted JSON followed by a fresh complete one.
+        # The schema's required top-level key is "headline" — find every
+        # `{"headline"` boundary, try to parse a balanced object from each
+        # (prefer the LAST one — the model's final attempt is usually
+        # the complete one). Return the first that parses.
+        anchors = []
+        i = 0
+        while True:
+            j = text.find('{"headline"', i)
+            if j < 0:
+                break
+            anchors.append(j)
+            i = j + 1
+        for start in reversed(anchors):  # last attempt first
+            depth = 0
+            in_str = False
+            esc = False
+            for k in range(start, len(text)):
+                ch = text[k]
+                if esc:
+                    esc = False
+                    continue
+                if ch == "\\" and in_str:
+                    esc = True
+                    continue
+                if ch == '"':
+                    in_str = not in_str
+                    continue
+                if in_str:
+                    continue
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(text[start : k + 1])
+                        except json.JSONDecodeError:
+                            break
+    try:
+        return json.loads(text)
     except json.JSONDecodeError as exc:
         # Dump the raw LLM output so the user can see what came back
         # (empty? truncated? markdown wrapped in unexpected way?) instead

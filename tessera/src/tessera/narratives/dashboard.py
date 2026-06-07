@@ -1380,7 +1380,7 @@ def _render_timeline(timeline: dict) -> str:
     if stable:
         bits.append(f'<span class="tl-bullet"><strong>{stable}</strong>stable</span>')
     if resolved:
-        bits.append(f'<span class="tl-bullet tl-resolved"><strong>{resolved}</strong>resolved since last</span>')
+        bits.append(f'<span class="tl-bullet tl-resolved" title="In prior runs but not this one — could be window/corpus, not necessarily fixed"><strong>{resolved}</strong>absent this run</span>')
     if not bits:
         return ""
     prior_ts = (timeline.get("prior_run_timestamp") or "")[:10]
@@ -1561,8 +1561,8 @@ def _render_changelog_pulse(synthesis: dict) -> str:
         f'<div class="pulse-num pulse-num-warn">{reg_n}</div><div class="pulse-num-lab">regressed</div></div>'
         f'<div class="pulse-stat" title="Patterns that didn\'t exist last week — new friction or new behavior">'
         f'<div class="pulse-num">{new_n}</div><div class="pulse-num-lab">new</div></div>'
-        f'<div class="pulse-stat pulse-stat-good" title="Patterns from last week that no longer appear — you might have fixed them">'
-        f'<div class="pulse-num">{res_n}</div><div class="pulse-num-lab">resolved</div></div>'
+        f'<div class="pulse-stat pulse-stat-good" title="In a prior run but not this one. Often a corpus/window difference (smaller window, different sessions) — not necessarily a fix.">'
+        f'<div class="pulse-num">{res_n}</div><div class="pulse-num-lab">absent this run</div></div>'
         '</div>'
     )
 
@@ -1687,7 +1687,7 @@ def _render_changelog_block(synthesis: dict) -> str:
         + _bucket("Escalating", "escalating", obs["escalating"], bp["escalating"], show_delta=True)
         + _bucket("Regressed (was resolved, now back)", "regressed", obs["regressed"], bp["regressed"])
         + _bucket("Improving", "improving", obs["improving"], bp["improving"], show_delta=True)
-        + _bucket("Resolved (gone since last run — close the loop?)", "resolved", obs["resolved"], bp["resolved"])
+        + _bucket("Absent this run (not surfaced — could be window/corpus, not a fix)", "resolved", obs["resolved"], bp["resolved"])
     )
 
     headline_parts = []
@@ -1696,7 +1696,7 @@ def _render_changelog_block(synthesis: dict) -> str:
     if s.get("obs_escalating") or s.get("bp_escalating"):
         headline_parts.append(f'{s.get("obs_escalating",0) + s.get("bp_escalating",0)} escalating')
     if s.get("obs_resolved") or s.get("bp_resolved"):
-        headline_parts.append(f'{s.get("obs_resolved",0) + s.get("bp_resolved",0)} resolved')
+        headline_parts.append(f'{s.get("obs_resolved",0) + s.get("bp_resolved",0)} absent')
     if s.get("obs_regressed") or s.get("bp_regressed"):
         headline_parts.append(f'{s.get("obs_regressed",0) + s.get("bp_regressed",0)} regressed')
     headline_str = " · ".join(headline_parts) if headline_parts else "no major changes"

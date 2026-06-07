@@ -1072,6 +1072,7 @@ def _weekly_command(args: argparse.Namespace) -> int:
     print("\n=== Tessera weekly · step 1/3: analysis ===\n", file=sys.stderr)
     run_args = argparse.Namespace(
         lookback_days=args.lookback_days,
+        all_time=False,
         max_age_days=None,
         min_events=args.min_events,
         min_sessions=args.min_sessions,
@@ -1087,10 +1088,10 @@ def _weekly_command(args: argparse.Namespace) -> int:
         prior_runs=3,
         no_history=False,
         no_prompt=True,  # cron-friendly
-        claude_projects=None,
-        codex_sessions=None,
-        gemini_tmp=None,
-        gemini_projects_json=None,
+        claude_projects=str(DEFAULT_CLAUDE_PROJECTS),
+        codex_sessions=str(DEFAULT_CODEX_SESSIONS),
+        gemini_tmp=str(DEFAULT_GEMINI_TMP),
+        gemini_projects_json=str(DEFAULT_GEMINI_PROJECTS_JSON),
         max_text_chars=2000,
         project=None,
     )
@@ -1141,9 +1142,25 @@ def _weekly_command(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
 
-    # 3. Open the rendered dashboard for review + accept-experiments-by-rating
+    # 3. Re-render the dashboard so it reflects the evaluator's verdicts,
+    #    then open it for review + accept-experiments-by-rating.
     print("\n=== Tessera weekly · step 3/3: dashboard ===\n", file=sys.stderr)
-    dashboard = Path(args.output_dir).expanduser() / "synthesis.html"
+    output_dir = Path(args.output_dir).expanduser()
+    synthesis_path = output_dir / "synthesis.json"
+    narratives_dir = output_dir / "narratives"
+    dashboard = output_dir / "synthesis.html"
+    if synthesis_path.exists() and narratives_dir.exists():
+        try:
+            from .narratives.dashboard import write_dashboard
+            write_dashboard(
+                synthesis_path,
+                narratives_dir,
+                dashboard,
+                cache_dir=DEFAULT_CACHE_DIR if DEFAULT_CACHE_DIR.exists() else None,
+            )
+            print("  Re-rendered dashboard with latest experiment verdicts.", file=sys.stderr)
+        except Exception as exc:
+            print(f"  Dashboard re-render failed ({exc}); using step-1 render.", file=sys.stderr)
     if dashboard.exists() and not args.no_open:
         try:
             subprocess.run(["open", str(dashboard)], check=False, timeout=5)
