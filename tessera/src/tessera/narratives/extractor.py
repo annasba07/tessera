@@ -12,13 +12,7 @@ import json
 import re
 from typing import Any
 
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    ResultMessage,
-    TextBlock,
-    query,
-)
+from ..backends import LLMBackend, get_backend
 
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -245,38 +239,24 @@ _TRANSIENT_FAILURE_SIGNALS = (
 )
 
 
-async def _call_claude_once(prompt: str, model: str) -> str:
-    collected = ""
-    agen = query(
-        prompt=prompt,
-        options=ClaudeAgentOptions(
-            model=model,
-            allowed_tools=[],
-            system_prompt="Return only valid JSON. No markdown fence, no preamble.",
-        ),
-    )
-    try:
-        async for message in agen:
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        collected += block.text
-            elif isinstance(message, ResultMessage):
-                break
-    finally:
-        # See parallel comment in synthesis._call_claude — explicit aclose
-        # avoids GC racing a later query() with "generator already running".
-        await agen.aclose()
-    return collected
-
-
-async def _call_claude(prompt: str, model: str, *, max_retries: int = 2) -> str:
-    """One-shot retry on transient SDK failures. Mirror of synthesis._call_claude
-    — the same vulnerability hits per-session extraction at scale."""
+async def _call_llm(
+    backend: LLMBackend,
+    prompt: str,
+    model: str,
+    *,
+    max_retries: int = 2,
+) -> str:
+    """Backend-agnostic retry on transient failures. The transient signals
+    list was tuned for the Claude SDK but the same strings appear in
+    Codex/Gemini CLI stderr — keep one list, retry uniformly."""
     import asyncio, sys
     last_collected = ""
     for attempt in range(max_retries + 1):
-        collected = await _call_claude_once(prompt, model)
+        try:
+            collected = await backend.complete(prompt, model)
+        except RuntimeError as exc:
+            # CLI backend non-zero exit. Treat as a transient signal and retry.
+            collected = str(exc)
         last_collected = collected
         stripped = collected.strip()
         is_short_failure = (
@@ -300,12 +280,17 @@ async def extract_narrative(
     metadata: dict,
     stream: str,
     model: str = DEFAULT_MODEL,
+    backend: LLMBackend | None = None,
 ) -> dict[str, Any]:
     """Run the LLM and return the parsed narrative dict (pre-validation).
+
+    Args:
+        backend: which LLM backend to call. None → uses
+            ``backends.get_backend()`` which respects $TESSERA_BACKEND.
 
     Raises:
         json.JSONDecodeError if the model returns non-JSON.
     """
     prompt = build_prompt(metadata, stream)
-    raw = await _call_claude(prompt, model)
+    raw = await _call_llm(backend or get_backend(), prompt, model)
     return _extract_json(raw)

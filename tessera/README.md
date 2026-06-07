@@ -56,7 +56,11 @@ See [docs/schema/v1.md](docs/schema/v1.md) for the full per-session schema, [doc
 
 ## Install
 
-Requires Python 3.11+ and an authenticated `claude` CLI (version 2+). No `ANTHROPIC_API_KEY` — token usage routes through your existing Claude Code auth.
+Requires Python 3.11+ and at least one of these LLM CLIs authenticated:
+
+- **`claude`** (Anthropic Claude Code) — default backend, no `ANTHROPIC_API_KEY` needed; routes through your Claude Code auth
+- **`codex`** (OpenAI Codex CLI) — works with ChatGPT subscription auth
+- **`gemini`** (Google Gemini CLI) — works with `gcloud auth`
 
 ```bash
 pip install tessera-agents
@@ -65,6 +69,19 @@ uv tool install tessera-agents
 ```
 
 > The PyPI package is `tessera-agents` (the bare name `tessera` was taken). The CLI binary, slash command, and import are all just `tessera`.
+
+### Pick a backend
+
+Default is Claude. Switch with `--backend`:
+
+```bash
+tessera run --backend codex     # uses your `codex exec` for narrate + synthesis
+tessera run --backend gemini    # uses `gemini -p`
+tessera weekly --backend codex  # the closed loop on a different model
+TESSERA_BACKEND=codex tessera run   # or set the env var globally
+```
+
+`tessera doctor` shows which backends are installed.
 
 ## Use
 

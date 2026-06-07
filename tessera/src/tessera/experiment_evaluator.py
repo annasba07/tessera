@@ -25,14 +25,7 @@ import json
 import re
 from typing import Any
 
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    ResultMessage,
-    TextBlock,
-    query,
-)
-
+from .backends import LLMBackend, get_backend
 from .experiments import Experiment
 
 
@@ -146,27 +139,8 @@ def build_evaluator_prompt(exp: Experiment, post_narratives: list[dict]) -> str:
     )
 
 
-async def _call_claude_once(prompt: str, model: str) -> str:
-    collected = ""
-    agen = query(
-        prompt=prompt,
-        options=ClaudeAgentOptions(
-            model=model,
-            allowed_tools=[],
-            system_prompt="Return only valid JSON. No markdown fence, no preamble.",
-        ),
-    )
-    try:
-        async for message in agen:
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        collected += block.text
-            elif isinstance(message, ResultMessage):
-                break
-    finally:
-        await agen.aclose()
-    return collected
+async def _call_llm_once(backend: LLMBackend, prompt: str, model: str) -> str:
+    return await backend.complete(prompt, model)
 
 
 def _extract_json(raw: str) -> dict:
@@ -177,12 +151,18 @@ def _extract_json(raw: str) -> dict:
     return json.loads(text)
 
 
-def evaluate_one(exp: Experiment, post_narratives: list[dict], model: str = DEFAULT_MODEL) -> dict[str, Any]:
+def evaluate_one(
+    exp: Experiment,
+    post_narratives: list[dict],
+    model: str = DEFAULT_MODEL,
+    backend: LLMBackend | None = None,
+) -> dict[str, Any]:
     """Synchronous public entry: evaluate one experiment, return a dict
     suitable for evaluate_pending() to consume.
 
-    On any failure (timeout, malformed JSON), returns adherence/effect of
-    'unknown' so the experiment stays active and gets retried next week.
+    On any failure (timeout, malformed JSON, CLI exit code), returns
+    adherence/effect of 'unknown' so the experiment stays active and
+    gets retried next week.
     """
     if not post_narratives:
         return {
@@ -195,7 +175,7 @@ def evaluate_one(exp: Experiment, post_narratives: list[dict], model: str = DEFA
         }
     prompt = build_evaluator_prompt(exp, post_narratives)
     try:
-        raw = asyncio.run(_call_claude_once(prompt, model))
+        raw = asyncio.run(_call_llm_once(backend or get_backend(), prompt, model))
         parsed = _extract_json(raw)
     except Exception as exc:
         return {
@@ -212,12 +192,13 @@ def evaluate_one(exp: Experiment, post_narratives: list[dict], model: str = DEFA
     return parsed
 
 
-def make_callable(model: str = DEFAULT_MODEL):
+def make_callable(model: str = DEFAULT_MODEL, backend: LLMBackend | None = None):
     """Return a callable suitable for `evaluate_pending(llm_evaluator=...)`.
 
-    Bound to a chosen model so the caller can A/B different evaluators
-    (e.g. Sonnet vs Haiku for cost) without modifying experiments.py.
+    Bound to a chosen model + backend so the caller can A/B different
+    evaluators (e.g. Sonnet vs Codex's gpt-5 vs Gemini 2.5) without
+    modifying experiments.py.
     """
     def _wrapped(exp: Experiment, post_narratives: list[dict]) -> dict:
-        return evaluate_one(exp, post_narratives, model=model)
+        return evaluate_one(exp, post_narratives, model=model, backend=backend)
     return _wrapped

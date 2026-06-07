@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import __version__
+from .backends import default_model_for, get_backend, list_backends
 from .history import DEFAULT_DATA_DIR, HistoryStore, _observation_key
 from .narratives import DEFAULT_CACHE_DIR, NarrativeCache
 from .narratives.extractor import DEFAULT_MODEL as DEFAULT_NARRATIVE_MODEL
@@ -24,6 +25,30 @@ from .pipeline import (
     DEFAULT_GEMINI_TMP,
     normalize_live_traces,
 )
+
+
+def _resolve_backend_and_model(args: argparse.Namespace):
+    """Resolve (backend_instance, model_id) from CLI args.
+
+    Falls back to claude SDK if --backend is absent. Lets --model override
+    the backend's default; otherwise uses the backend's default model so
+    `--backend codex` doesn't try to send claude-sonnet-4-6 to OpenAI.
+
+    Backends with empty default_model (codex, gemini) mean "let the CLI
+    pick its session default" — we pass empty string through so the
+    backend knows to omit the --model flag.
+    """
+    backend_name = getattr(args, "backend", None) or "claude"
+    backend = get_backend(backend_name)
+    requested_model = getattr(args, "model", None)
+    # The arg default is the Claude default; if the user picked another
+    # backend but didn't pass --model, swap to the backend's default
+    # (which may be empty → let the CLI choose).
+    if backend_name != "claude" and requested_model == DEFAULT_NARRATIVE_MODEL:
+        model = default_model_for(backend_name)  # may be ""
+    else:
+        model = requested_model or default_model_for(backend_name)
+    return backend, model
 
 
 RATING_PROMPTS = {
@@ -39,6 +64,8 @@ def _run_command(args: argparse.Namespace) -> int:
     """Full retrospective: normalize → narrate (per-session) → synthesize → save → render."""
     from .narratives.pipeline import load_all_sessions_events
     from .narratives.synthesis import load_narratives, synthesize as run_synthesis
+
+    backend, args.model = _resolve_backend_and_model(args)
     from .narratives.render import render_synthesis_markdown, render_synthesis_text
 
     # --all-time / lookback_days=0 → no time filter
@@ -155,7 +182,7 @@ def _run_command(args: argparse.Namespace) -> int:
             print(file=sys.stderr)
 
         print(
-            f"[3/4] Extracting per-session narratives via {args.model} "
+            f"[3/4] Extracting per-session narratives via {backend.name}/{args.model} "
             f"(concurrency={args.concurrency})...",
             file=sys.stderr,
         )
@@ -185,6 +212,7 @@ def _run_command(args: argparse.Namespace) -> int:
             extract_many(
                 inputs,
                 model=args.model,
+                backend=backend,
                 cache=cache,
                 force=args.force,
                 concurrency=args.concurrency,
@@ -236,12 +264,13 @@ def _run_command(args: argparse.Namespace) -> int:
         prior_context = (prior_context or "") + "\n\n## Active self-experiments\n" + exp_text
         print("       → including active experiments as context.", file=sys.stderr)
 
-    print(f"[4/4] Cross-session synthesis via {args.model}...", file=sys.stderr)
+    print(f"[4/4] Cross-session synthesis via {backend.name}/{args.model}...", file=sys.stderr)
     t0 = time.monotonic()
     try:
         synthesis = run_synthesis(
             narratives,
             model=args.model,
+            backend=backend,
             prior_context=prior_context,
         )
     except json.JSONDecodeError as exc:
@@ -589,6 +618,7 @@ def _narrate_command(args: argparse.Namespace) -> int:
 
     from .narratives import DEFAULT_CACHE_DIR
 
+    backend, args.model = _resolve_backend_and_model(args)
     cache_dir = (
         Path(args.cache_dir).expanduser()
         if args.cache_dir
@@ -699,6 +729,7 @@ def _narrate_command(args: argparse.Namespace) -> int:
             extract_many(
                 inputs,
                 model=args.model,
+                backend=backend,
                 cache=cache,
                 force=args.force,
                 skip_llm=args.dry_run,
@@ -1078,6 +1109,7 @@ def _weekly_command(args: argparse.Namespace) -> int:
         min_sessions=args.min_sessions,
         limit=args.limit,
         model=args.model,
+        backend=getattr(args, "backend", "claude"),
         concurrency=args.concurrency,
         force=False,
         output=str(Path(args.output_dir).expanduser() / "synthesis.json"),
@@ -1118,7 +1150,13 @@ def _weekly_command(args: argparse.Namespace) -> int:
             summary = evaluate_pending(narratives, exp_store)
         else:
             from .experiment_evaluator import make_callable
-            summary = evaluate_pending(narratives, exp_store, llm_evaluator=make_callable(args.model))
+            eval_backend, eval_model = _resolve_backend_and_model(args)
+            print(f"  Evaluator: {eval_backend.name}/{eval_model}", file=sys.stderr)
+            summary = evaluate_pending(
+                narratives,
+                exp_store,
+                llm_evaluator=make_callable(model=eval_model, backend=eval_backend),
+            )
         print(f"  Evaluated: {summary['evaluated']}", file=sys.stderr)
         if summary.get("graduated"):
             print(f"  ✓ Graduated: {len(summary['graduated'])}", file=sys.stderr)
@@ -1195,23 +1233,31 @@ def _doctor_command(args: argparse.Namespace) -> int:
     print("\nTessera diagnostic")
     print("=" * 60)
 
-    # 1. Required: claude CLI
-    print("\nLLM backend (Claude CLI):")
-    claude_path = shutil.which("claude")
-    if not claude_path:
-        print("  ✗ `claude` CLI not on PATH — required for narrate + synthesize.")
-        print("    Install: https://docs.claude.com/en/docs/claude-code/setup")
-        claude_ok = False
-    else:
+    # 1. LLM backends — at least one must be available
+    print("\nLLM backends (default: claude; pick another via `--backend codex|gemini`):")
+    backend_status = {}
+    for bname in list_backends():
+        b = get_backend(bname)
+        bin_path = shutil.which(b.cli_binary) if b.cli_binary else None
+        if not bin_path:
+            print(f"  - {bname:<7} `{b.cli_binary}` CLI not on PATH (default model: {b.default_model})")
+            backend_status[bname] = False
+            continue
         try:
             ver = subprocess.run(
-                ["claude", "--version"], capture_output=True, text=True, timeout=5
+                [b.cli_binary, "--version"], capture_output=True, text=True, timeout=5
             )
             ver_str = (ver.stdout or ver.stderr).strip().splitlines()[0] if ver.returncode == 0 else "(version check failed)"
         except Exception:
             ver_str = "(version check failed)"
-        print(f"  ✓ {claude_path}  ({ver_str})")
-        claude_ok = True
+        print(f"  ✓ {bname:<7} {bin_path}  ({ver_str}, default model: {b.default_model})")
+        backend_status[bname] = True
+    claude_ok = backend_status.get("claude", False)
+    if not any(backend_status.values()):
+        print("\n  ✗ No LLM backend available — install at least one CLI before running tessera.")
+        print("    claude: https://docs.claude.com/en/docs/claude-code/setup")
+        print("    codex:  https://github.com/openai/codex")
+        print("    gemini: https://github.com/google-gemini/gemini-cli")
 
     # 2. Optional: gh CLI for richer outcome enrichment
     print("\nOutcome enrichment (gh CLI, optional):")
@@ -1327,6 +1373,7 @@ def _synthesize_command(args: argparse.Namespace) -> int:
     from .narratives.render import render_synthesis_markdown, render_synthesis_text
     from .narratives.synthesis import load_narratives, synthesize
 
+    backend, args.model = _resolve_backend_and_model(args)
     narratives_dir = Path(args.narratives_dir).expanduser()
     if not narratives_dir.exists():
         print(f"error: narratives dir not found: {narratives_dir}", file=sys.stderr)
@@ -1356,11 +1403,12 @@ def _synthesize_command(args: argparse.Namespace) -> int:
         prior_context = (prior_context or "") + "\n\n## Active self-experiments\n" + exp_text
         print("       → including active experiments as context.", file=sys.stderr)
 
-    print(f"[2/2] Asking {args.model} for cross-session synthesis...", file=sys.stderr)
+    print(f"[2/2] Asking {backend.name}/{args.model} for cross-session synthesis...", file=sys.stderr)
     t0 = time.monotonic()
     result = synthesize(
         narratives,
         model=args.model,
+        backend=backend,
         project_filter=args.project,
         prior_context=prior_context,
     )
@@ -1424,8 +1472,12 @@ def main(argv: list[str] | None = None) -> int:
                      help="Process at most N sessions (newest first). 0 = no limit.")
     run.add_argument("--min-sessions", type=int, default=6,
                      help="Abort if fewer than N sessions qualify.")
+    run.add_argument("--backend", default=None, choices=list_backends(),
+                     help="LLM backend: claude (Anthropic Claude SDK), codex (OpenAI Codex CLI), "
+                          "gemini (Google Gemini CLI). Default: claude.")
     run.add_argument("--model", default=DEFAULT_NARRATIVE_MODEL,
-                     help="Claude model used for both narrate and synthesize stages.")
+                     help="Model id used for both narrate and synthesize stages. "
+                          "Default picks the backend's recommended model.")
     run.add_argument("--concurrency", type=int, default=10,
                      help="Per-session narrative extraction concurrency.")
     run.add_argument("--force", action="store_true",
@@ -1520,8 +1572,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="Skip sessions with fewer than this many events.")
     narrate.add_argument("--limit", type=int, default=0,
                         help="Process at most N sessions (newest first). 0 = no limit.")
+    narrate.add_argument("--backend", default=None, choices=list_backends(),
+                        help="LLM backend (claude | codex | gemini). Default: claude.")
     narrate.add_argument("--model", default=DEFAULT_NARRATIVE_MODEL,
-                        help="LLM model for narrative extraction.")
+                        help="LLM model for narrative extraction. "
+                             "Default picks the backend's recommended model.")
     narrate.add_argument("--concurrency", type=int, default=5,
                         help="Number of sessions to extract in parallel.")
     narrate.add_argument("--force", action="store_true",
@@ -1555,7 +1610,10 @@ def main(argv: list[str] | None = None) -> int:
         default="./narratives",
         help="Directory of per-session narrative JSON files.",
     )
-    synthesize.add_argument("--model", default=DEFAULT_NARRATIVE_MODEL)
+    synthesize.add_argument("--backend", default=None, choices=list_backends(),
+                            help="LLM backend (claude | codex | gemini). Default: claude.")
+    synthesize.add_argument("--model", default=DEFAULT_NARRATIVE_MODEL,
+                            help="Default picks the backend's recommended model.")
     synthesize.add_argument(
         "--project",
         default=None,
@@ -1644,8 +1702,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="Abort if fewer than this many sessions qualify.")
     weekly.add_argument("--limit", type=int, default=0,
                         help="Cap at N most-recent qualifying sessions (0 = no cap).")
+    weekly.add_argument("--backend", default=None, choices=list_backends(),
+                        help="LLM backend for all three stages (narrate + synth + eval). "
+                             "Options: claude | codex | gemini. Default: claude.")
     weekly.add_argument("--model", default=DEFAULT_NARRATIVE_MODEL,
-                        help="LLM model for narration + synthesis + experiment eval.")
+                        help="LLM model for narration + synthesis + experiment eval. "
+                             "Default picks the backend's recommended model.")
     weekly.add_argument("--concurrency", type=int, default=10,
                         help="Parallel per-session narrative extractions.")
     weekly.add_argument("--output-dir", default="~/tessera-weekly",

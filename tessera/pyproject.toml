@@ -1,6 +1,6 @@
 [project]
 name = "tessera-agents"
-version = "0.5.1"
+version = "0.6.0"
 description = "Reflect on how you actually use AI coding agents. Reads your local Claude Code, Codex, and Gemini CLI traces, builds rich per-session narratives, and synthesizes cross-session patterns you can act on this week — with an interactive HTML dashboard."
 readme = "README.md"
 requires-python = ">=3.11"

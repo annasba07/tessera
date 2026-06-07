@@ -17,6 +17,7 @@ from typing import Any
 from .cache import NarrativeCache
 from .compressor import compress_events
 from .deterministic import extract_deterministic
+from ..backends import LLMBackend
 from .extractor import DEFAULT_MODEL, extract_narrative as llm_extract
 from .validator import validate_narrative
 
@@ -105,6 +106,7 @@ async def extract_session_narrative(
     events: list[dict],
     *,
     model: str = DEFAULT_MODEL,
+    backend: LLMBackend | None = None,
     cache: NarrativeCache | None = None,
     force: bool = False,
     skip_llm: bool = False,
@@ -136,8 +138,9 @@ async def extract_session_narrative(
             timing=timing,
         )
 
+    backend_name = backend.name if backend else "claude"
     cache_key = NarrativeCache.make_key(
-        metadata["events_content_hash"], SCHEMA_VERSION, model
+        metadata["events_content_hash"], SCHEMA_VERSION, model, backend=backend_name
     )
 
     if cache and not force and not skip_llm:
@@ -171,7 +174,7 @@ async def extract_session_narrative(
 
     t0 = _now()
     try:
-        raw_narrative = await llm_extract(metadata, stream, model=model)
+        raw_narrative = await llm_extract(metadata, stream, model=model, backend=backend)
     except json.JSONDecodeError as exc:
         return NarrativeResult(
             session_id=session_id,
@@ -222,6 +225,7 @@ async def extract_many(
     session_ids_and_events: list[tuple[str, list[dict]]],
     *,
     model: str = DEFAULT_MODEL,
+    backend: LLMBackend | None = None,
     cache: NarrativeCache | None = None,
     force: bool = False,
     skip_llm: bool = False,
@@ -239,6 +243,7 @@ async def extract_many(
                 sid,
                 events,
                 model=model,
+                backend=backend,
                 cache=cache,
                 force=force,
                 skip_llm=skip_llm,

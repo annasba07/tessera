@@ -20,13 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    ResultMessage,
-    TextBlock,
-    query,
-)
+from ..backends import LLMBackend, get_backend
 
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -617,44 +611,31 @@ _TRANSIENT_FAILURE_SIGNALS = (
 )
 
 
-async def _call_claude_once(prompt: str, model: str) -> str:
-    collected = ""
-    agen = query(
-        prompt=prompt,
-        options=ClaudeAgentOptions(
-            model=model,
-            allowed_tools=[],
-            system_prompt="Return only valid JSON. No markdown fence, no preamble.",
-        ),
-    )
-    try:
-        async for message in agen:
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        collected += block.text
-            elif isinstance(message, ResultMessage):
-                break
-    finally:
-        # Explicit close — without this, breaking out of the async-for above
-        # leaves the generator alive, and GC's later aclose() can race a
-        # subsequent query() call ("asynchronous generator is already running").
-        await agen.aclose()
-    return collected
+async def _call_llm(
+    backend: LLMBackend,
+    prompt: str,
+    model: str,
+    *,
+    max_retries: int = 2,
+) -> str:
+    """Call the configured backend with one-shot retry on transient failures.
 
+    Backends return short error sentinels ("Request timed out", rate-limit
+    messages) as the entire response when the underlying HTTP request
+    fails. Without retry, every long-prompt synthesis would crash on the
+    first hiccup. Retries with exponential backoff (3s, 9s).
 
-async def _call_claude(prompt: str, model: str, *, max_retries: int = 2) -> str:
-    """Call Claude with one-shot retry on transient failures.
-
-    The agent SDK returns short error sentinels ("Request timed out",
-    rate-limit messages) as the entire assistant text when the underlying
-    HTTP request fails. Without retry, every long-prompt synthesis would
-    crash on the first hiccup. Retries with exponential backoff (3s, 8s).
+    Also catches RuntimeError from CLI backends (non-zero exit) and treats
+    it as a transient signal for retry — the CLI's stderr often contains
+    the same transient strings.
     """
     import sys
     last_collected = ""
     for attempt in range(max_retries + 1):
-        collected = await _call_claude_once(prompt, model)
+        try:
+            collected = await backend.complete(prompt, model)
+        except RuntimeError as exc:
+            collected = str(exc)
         last_collected = collected
         stripped = collected.strip()
         is_short_failure = (
@@ -937,6 +918,7 @@ def synthesize(
     narratives: list[dict],
     *,
     model: str = DEFAULT_MODEL,
+    backend: LLMBackend | None = None,
     project_filter: str | None = None,
     prior_context: str | None = None,
 ) -> dict[str, Any]:
@@ -980,7 +962,7 @@ def synthesize(
             f"Pass --lookback-days N or --limit N to reduce the input set."
         )
 
-    raw = asyncio.run(_call_claude(prompt, model))
+    raw = asyncio.run(_call_llm(backend or get_backend(), prompt, model))
     parsed = _extract_json(raw)
     validated = _validate(parsed, ref_to_id)
     meta = validated.setdefault("meta", {})

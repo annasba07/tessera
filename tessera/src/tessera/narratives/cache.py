@@ -39,8 +39,21 @@ class NarrativeCache:
         return self.cache_dir / _safe_filename(session_id)
 
     @staticmethod
-    def make_key(events_content_hash: str, schema_version: int, model: str) -> str:
-        return f"{events_content_hash}|v{schema_version}|{model}"
+    def make_key(
+        events_content_hash: str,
+        schema_version: int,
+        model: str,
+        backend: str = "claude",
+    ) -> str:
+        """Cache key tuple. For backend='claude' we keep the pre-multi-backend
+        format (just the model id) so existing on-disk entries from earlier
+        tessera versions stay valid — the claude model names ('claude-sonnet-4-6')
+        already carry provider context. For other backends, namespace by
+        backend so an empty model id on codex doesn't collide with an empty
+        model id on gemini."""
+        if backend == "claude":
+            return f"{events_content_hash}|v{schema_version}|{model}"
+        return f"{events_content_hash}|v{schema_version}|{backend}:{model}"
 
     def load(self, session_id: str, expected_key: str) -> dict | None:
         """Return cached payload if its cache_key matches; else None."""
