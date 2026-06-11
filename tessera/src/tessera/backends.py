@@ -337,31 +337,34 @@ def list_backends() -> list[str]:
 
 
 def get_backend(name: str | None = None) -> LLMBackend:
-    """Resolve a backend by name. Falls back to env var, then to whichever
-    backend is installed.
+    """Resolve a backend by name. Falls back to env var, then claude.
 
     Resolution order:
       1. explicit name (--backend X on the CLI)
       2. $TESSERA_BACKEND env var
-      3. antigravity (the calibration-audited best on 29-session bake-off)
-         IF the `agy` CLI is installed
-      4. claude (always-on safety net — the original backend)
+      3. claude (the calibration-stable default)
+
+    Why not antigravity by default: a 3-run consistency check on a fixed
+    29-session input showed Flash 3.5 High had a 33% hard-failure rate
+    (1 run hung past the 15-min CLI timeout, 1 returned valid JSON, 1
+    returned trailing prose past the JSON we now recover from). Among the
+    runs that did complete, ZERO hit the ground-truth OAuth count of 22 —
+    spread was [18, 20], both undercounts. Claude's variance is real
+    (saw 22 → 17 across two runs) but its hard-failure rate is materially
+    lower. Until Flash High's reliability improves, antigravity stays
+    opt-in via --backend antigravity. The calibration audit
+    (narratives.calibration) catches undercount failures from any
+    backend inline so users see the miss without reading the narratives.
 
     Raises:
         ValueError: if `name` is not a registered backend.
     """
-    requested = (name or os.environ.get("TESSERA_BACKEND") or "").lower()
-    if requested:
-        if requested not in _REGISTRY:
-            raise ValueError(
-                f"Unknown backend '{requested}'. Available: {list(_REGISTRY)}"
-            )
-        return _REGISTRY[requested]()
-    # No explicit request — pick antigravity if installed, else claude.
-    agy = _REGISTRY["antigravity"]()
-    if agy.available():
-        return agy
-    return _REGISTRY["claude"]()
+    resolved = (name or os.environ.get("TESSERA_BACKEND") or "claude").lower()
+    if resolved not in _REGISTRY:
+        raise ValueError(
+            f"Unknown backend '{resolved}'. Available: {list(_REGISTRY)}"
+        )
+    return _REGISTRY[resolved]()
 
 
 def default_model_for(backend_name: str | None) -> str:

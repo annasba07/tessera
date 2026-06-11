@@ -546,7 +546,19 @@ def _extract_json(raw: str) -> dict:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        # Recovery: Sonnet occasionally collapses mid-output and restarts,
+        # Recovery 0: Flash 3.5 High sometimes emits a complete valid JSON
+        # object followed by prose commentary ("...this analysis covers..."
+        # explaining what it did). raw_decode parses the first JSON value
+        # and returns its end-index; everything after is silently dropped.
+        if text.lstrip().startswith("{"):
+            try:
+                decoder = json.JSONDecoder()
+                obj, _end = decoder.raw_decode(text.lstrip())
+                if isinstance(obj, dict):
+                    return obj
+            except json.JSONDecodeError:
+                pass
+        # Recovery 1: Sonnet occasionally collapses mid-output and restarts,
         # leaving partial corrupted JSON followed by a fresh complete one.
         # The schema's required top-level key is "headline" — find every
         # `{"headline"` boundary, try to parse a balanced object from each
@@ -628,6 +640,20 @@ _TRANSIENT_FAILURE_SIGNALS = (
     "503 Service",
 )
 
+# Sentinel substrings that mean the backend (agy in particular) decided
+# to use tools and either timed out or returned nothing but exploration
+# narration instead of the synthesis JSON. The consistency check on
+# Flash High showed 2 of 3 runs failed this way. Detected separately so
+# we can retry with a stronger no-tool-use reminder appended.
+_AGENTIC_ROGUE_SIGNALS = (
+    "I am waiting for",
+    "background task",
+    "background search",
+    "I will check the files",
+    "I will list the contents",
+    "Error: timed out waiting for response",
+)
+
 
 async def _call_llm(
     backend: LLMBackend,
@@ -650,8 +676,22 @@ async def _call_llm(
     import sys
     last_collected = ""
     for attempt in range(max_retries + 1):
+        # On retry after a rogue-tool-use failure, append a stronger
+        # no-exploration reminder. Agy's Flash 3.5 sometimes decides to
+        # search the filesystem for "untruncated source data" instead of
+        # working from the provided narratives.
+        attempt_prompt = prompt
+        if attempt > 0:
+            attempt_prompt = (
+                prompt
+                + "\n\n## CRITICAL: do not use tools\n"
+                "All session data needed is in this prompt above. Do NOT search the filesystem, "
+                "do NOT spawn background tasks, do NOT try to find 'untruncated source' — the "
+                "compact narratives below are the complete input. Produce the JSON directly "
+                "from what's in this prompt."
+            )
         try:
-            collected = await backend.complete(prompt, model)
+            collected = await backend.complete(attempt_prompt, model)
         except RuntimeError as exc:
             collected = str(exc)
         last_collected = collected
@@ -660,12 +700,20 @@ async def _call_llm(
             len(stripped) < 200
             and any(sig.lower() in stripped.lower() for sig in _TRANSIENT_FAILURE_SIGNALS)
         )
-        if not is_short_failure:
+        # Rogue agentic narration: the model never produced JSON, just
+        # described what it was "waiting for." Length threshold higher
+        # because these can run 500-5000 chars of narration.
+        is_rogue_agentic = (
+            "{" not in stripped[:200]  # didn't start with JSON
+            and any(sig.lower() in stripped.lower() for sig in _AGENTIC_ROGUE_SIGNALS)
+        )
+        if not (is_short_failure or is_rogue_agentic):
             return collected
         if attempt < max_retries:
+            failure_kind = "transient" if is_short_failure else "rogue tool-use"
             backoff_s = 3 * (1 + 2 * attempt)  # 3s, 9s
             print(
-                f"  → LLM returned transient failure ({stripped[:80]!r}) — "
+                f"  → LLM returned {failure_kind} failure ({stripped[:80]!r}) — "
                 f"retrying in {backoff_s}s (attempt {attempt + 2}/{max_retries + 1})",
                 file=sys.stderr,
             )
