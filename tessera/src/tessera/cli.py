@@ -30,24 +30,25 @@ from .pipeline import (
 def _resolve_backend_and_model(args: argparse.Namespace):
     """Resolve (backend_instance, model_id) from CLI args.
 
-    Falls back to claude SDK if --backend is absent. Lets --model override
-    the backend's default; otherwise uses the backend's default model so
-    `--backend codex` doesn't try to send claude-sonnet-4-6 to OpenAI.
+    Falls back via ``backends.get_backend`` to antigravity if installed
+    else claude. Lets --model override the backend's default; otherwise
+    uses the backend's default model so `--backend codex` doesn't try to
+    send claude-sonnet-4-6 to OpenAI.
 
     Backends with empty default_model (codex, gemini) mean "let the CLI
     pick its session default" — we pass empty string through so the
     backend knows to omit the --model flag.
     """
-    backend_name = getattr(args, "backend", None) or "claude"
-    backend = get_backend(backend_name)
+    explicit = getattr(args, "backend", None)
+    backend = get_backend(explicit)  # honors --backend → env → installed-default
     requested_model = getattr(args, "model", None)
-    # The arg default is the Claude default; if the user picked another
-    # backend but didn't pass --model, swap to the backend's default
-    # (which may be empty → let the CLI choose).
-    if backend_name != "claude" and requested_model == DEFAULT_NARRATIVE_MODEL:
-        model = default_model_for(backend_name)  # may be ""
+    # The arg default is the Claude historical default. If the resolved
+    # backend isn't Claude AND the model wasn't explicitly overridden,
+    # swap to the backend's own default (which may be empty).
+    if backend.name != "claude" and requested_model == DEFAULT_NARRATIVE_MODEL:
+        model = backend.default_model
     else:
-        model = requested_model or default_model_for(backend_name)
+        model = requested_model or backend.default_model
     return backend, model
 
 
@@ -341,6 +342,34 @@ def _run_command(args: argparse.Namespace) -> int:
     md_path = output_path.with_suffix(".md")
     md_path.write_text(render_synthesis_markdown(synthesis), encoding="utf-8")
     print(f"→ wrote {md_path}", file=sys.stderr)
+
+    # Calibration audit — deterministic check on quantified claims. Catches
+    # the failure modes the bake-off revealed (Gemini's 18-vs-22 undercount,
+    # Codex's hallucinated comparatives, Claude's run-to-run variance).
+    # No LLM call; runs in milliseconds.
+    try:
+        from .narratives.calibration import calibrate, render_calibration_text
+        cal_report = calibrate(synthesis, narratives)
+        cal_path = output_path.with_name(output_path.stem + "-calibration.json")
+        cal_path.write_text(json.dumps(cal_report, indent=2), encoding="utf-8")
+        summary = cal_report["summary"]
+        n_checked = summary["total_quantified_claims_checked"]
+        if n_checked:
+            fails = summary["failed"]
+            tag = f"{summary['passed']}/{n_checked} claims passed"
+            if fails:
+                tag += f" — {fails} quantified claim(s) flagged"
+            print(f"→ calibration: {tag} (see {cal_path.name})", file=sys.stderr)
+            if fails:
+                # Surface each failure so the user sees it without opening a file.
+                for f in cal_report["findings"]:
+                    if f["verdict"] == "FAIL":
+                        print(
+                            f"    ✗ [{f['source']}] {f['explanation']}",
+                            file=sys.stderr,
+                        )
+    except Exception as exc:
+        print(f"  (calibration audit skipped: {exc})", file=sys.stderr)
 
     from .narratives.dashboard import render_dashboard
 
@@ -1338,11 +1367,13 @@ def _doctor_command(args: argparse.Namespace) -> int:
 
 
 def _eval_command(args: argparse.Namespace) -> int:
+    from .narratives.calibration import calibrate, render_calibration_text
     from .narratives.eval import (
         evaluate_narratives,
         evaluate_synthesis,
         render_eval_text,
     )
+    from .narratives.synthesis import load_narratives
 
     narratives_dir = Path(args.narratives_dir).expanduser()
     if not narratives_dir.exists():
@@ -1352,20 +1383,34 @@ def _eval_command(args: argparse.Namespace) -> int:
     narrative_eval = evaluate_narratives(narratives_dir)
 
     synthesis_eval = None
+    calibration_report = None
     if args.synthesis:
         synthesis_path = Path(args.synthesis).expanduser()
         if not synthesis_path.exists():
             print(f"error: synthesis file not found: {synthesis_path}", file=sys.stderr)
             return 1
         synthesis_eval = evaluate_synthesis(synthesis_path)
+        # Calibration: grade quantified claims against narratives.
+        # Deterministic — no LLM call.
+        try:
+            synthesis_data = json.loads(synthesis_path.read_text(encoding="utf-8"))
+            narratives = load_narratives(narratives_dir)
+            calibration_report = calibrate(synthesis_data, narratives)
+        except Exception as exc:
+            print(f"  (calibration audit skipped: {exc})", file=sys.stderr)
 
     if args.format == "json":
         result = {"narratives": narrative_eval}
         if synthesis_eval:
             result["synthesis"] = synthesis_eval
+        if calibration_report:
+            result["calibration"] = calibration_report
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
         print(render_eval_text(narrative_eval, synthesis_eval))
+        if calibration_report:
+            print()
+            print(render_calibration_text(calibration_report))
     return 0
 
 

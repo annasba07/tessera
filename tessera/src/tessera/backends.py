@@ -36,6 +36,12 @@ from abc import ABC, abstractmethod
 
 DEFAULT_SYSTEM_PROMPT = "Return only valid JSON. No markdown fence, no preamble."
 
+# Hard timeout for CLI subprocesses (codex/gemini/agy). Synthesis prompts
+# can legitimately take 5-10 min; we set 15 to leave headroom but cap the
+# blast radius of a hung CLI (observed: codex got stuck on one session
+# overnight and froze the entire bake-off until manually killed).
+_CLI_TIMEOUT_SEC = 900
+
 
 class LLMBackend(ABC):
     """A pluggable LLM backend. Stateless — instances are cheap to create."""
@@ -164,7 +170,17 @@ class CodexCLIBackend(LLMBackend):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await proc.communicate(input=full_prompt.encode())
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(input=full_prompt.encode()),
+                    timeout=_CLI_TIMEOUT_SEC,
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                raise RuntimeError(
+                    f"codex exec hung past {_CLI_TIMEOUT_SEC}s — killed"
+                )
             if proc.returncode != 0:
                 raise RuntimeError(
                     f"codex exec failed (exit {proc.returncode}): "
@@ -219,7 +235,14 @@ class GeminiCLIBackend(LLMBackend):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=_CLI_TIMEOUT_SEC
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise RuntimeError(f"gemini -p hung past {_CLI_TIMEOUT_SEC}s — killed")
         if proc.returncode != 0:
             raise RuntimeError(
                 f"gemini -p failed (exit {proc.returncode}): "
@@ -234,10 +257,77 @@ class GeminiCLIBackend(LLMBackend):
             return raw
 
 
+class AntigravityBackend(LLMBackend):
+    """Shell out to Google's Antigravity CLI (`agy`).
+
+    Antigravity is a multi-provider agentic runtime — its `models` list
+    includes Gemini 3.5 Flash, Gemini 3.1 Pro, Claude Sonnet/Opus 4.6, and
+    GPT-OSS 120B. Tessera exposes it as one backend; pick the actual model
+    via --model "Gemini 3.5 Flash (Medium)" (note the spaces and parens —
+    agy's model names are display strings).
+
+    Two agentic quirks we work around:
+    - It narrates ("I will check the files...") before producing output.
+      We run from a clean tempdir so it has nothing to explore, AND the
+      existing JSON extractor finds the balanced {...} block at the end.
+    - It defaults to interactive tool prompts. --dangerously-skip-permissions
+      auto-approves so it can answer in headless mode.
+    """
+
+    name = "antigravity"
+    # Bake-off (29 sessions, locked input, calibration-audited):
+    # - Flash High matched ground truth on the headline (22/22), produced 21
+    #   items including a unique temporal meta-insight, and ran 4× faster
+    #   than Claude Sonnet 4.6.
+    # - Flash Medium hung past 15 min on the synthesis prompt — avoid.
+    # - Flash Low matched speed but undercounted by 6 (16 vs 22) and
+    #   surfaced only 5 items.
+    # → High is the calibrated default. The user can still override via --model.
+    default_model = "Gemini 3.5 Flash (High)"
+    cli_binary = "agy"
+
+    async def complete(self, prompt, model, *, system_prompt=None):
+        import tempfile
+        full_prompt = (
+            f"{system_prompt or DEFAULT_SYSTEM_PROMPT}\n\n{prompt}"
+        )
+        # Run in a fresh tempdir so agy's "let me explore the workspace"
+        # default doesn't dump file listings into stdout before answering.
+        with tempfile.TemporaryDirectory(prefix="tessera-agy-") as work_dir:
+            cmd = [
+                self.cli_binary,
+                "--model", model or self.default_model,
+                "--dangerously-skip-permissions",
+                "--print-timeout", "10m",  # match tessera's slowest synth budget
+                "-p", full_prompt,
+            ]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=work_dir,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=_CLI_TIMEOUT_SEC
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                raise RuntimeError(f"agy -p hung past {_CLI_TIMEOUT_SEC}s — killed")
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"agy -p failed (exit {proc.returncode}): "
+                    f"{stderr.decode(errors='replace')[:500]}"
+                )
+            return stdout.decode(errors="replace")
+
+
 _REGISTRY: dict[str, type[LLMBackend]] = {
     "claude": ClaudeSDKBackend,
     "codex": CodexCLIBackend,
     "gemini": GeminiCLIBackend,
+    "antigravity": AntigravityBackend,
 }
 
 
@@ -247,19 +337,31 @@ def list_backends() -> list[str]:
 
 
 def get_backend(name: str | None = None) -> LLMBackend:
-    """Resolve a backend by name. Falls back to env var then 'claude'.
+    """Resolve a backend by name. Falls back to env var, then to whichever
+    backend is installed.
 
-    Resolution order: explicit name > $TESSERA_BACKEND > 'claude'.
+    Resolution order:
+      1. explicit name (--backend X on the CLI)
+      2. $TESSERA_BACKEND env var
+      3. antigravity (the calibration-audited best on 29-session bake-off)
+         IF the `agy` CLI is installed
+      4. claude (always-on safety net — the original backend)
 
     Raises:
         ValueError: if `name` is not a registered backend.
     """
-    resolved = (name or os.environ.get("TESSERA_BACKEND") or "claude").lower()
-    if resolved not in _REGISTRY:
-        raise ValueError(
-            f"Unknown backend '{resolved}'. Available: {list(_REGISTRY)}"
-        )
-    return _REGISTRY[resolved]()
+    requested = (name or os.environ.get("TESSERA_BACKEND") or "").lower()
+    if requested:
+        if requested not in _REGISTRY:
+            raise ValueError(
+                f"Unknown backend '{requested}'. Available: {list(_REGISTRY)}"
+            )
+        return _REGISTRY[requested]()
+    # No explicit request — pick antigravity if installed, else claude.
+    agy = _REGISTRY["antigravity"]()
+    if agy.available():
+        return agy
+    return _REGISTRY["claude"]()
 
 
 def default_model_for(backend_name: str | None) -> str:

@@ -137,6 +137,19 @@ Return ONE JSON object. No markdown fence. No preamble:
     }
   ],
 
+  "skill_candidates": [
+    {
+      "kind": "new_skill | deepen_existing",
+      "title": "<≤80 chars: name the skill, e.g. 'pulse-preflight: gworkspace auth canary'>",
+      "trigger_pattern": "<what recurring agent behavior would invoke this skill — be specific>",
+      "what_it_should_do": "<3-6 lines of actionable steps the skill should encode>",
+      "affected_sessions": <int>,
+      "evidence_refs": ["S001", ...],
+      "existing_skill_hint": "<if kind=deepen_existing: which existing skill name does the data suggest is missing depth; null otherwise>",
+      "confidence": "high | medium | low"
+    }
+  ],
+
   "per_project": [
     {
       "project": "<project_label>",
@@ -165,6 +178,11 @@ Return ONE JSON object. No markdown fence. No preamble:
   - **medium** = 3-4 supporting refs, or 5+ with noise/edge cases
   - **low** = hunch worth flagging, weak evidence (these are valuable — surface them with `low` confidence rather than dropping them)
 - For `quick_wins`: only one-time fixes (a command, a config line). Behavioral changes go in `behavioral_patterns.experiment_to_try`, not here.
+- For `skill_candidates`: surface a candidate when a recurring agent task (≥3 sessions) would benefit from being codified as a reusable agent skill rather than re-improvised every session.
+  - **new_skill** = the work is being repeated freshly each time. The codified skill should encode the canonical steps, the failure modes to avoid, and any pre-flight checks. Example: "pulse synth requires 5-account auth check + parallel fan-out + named-track fallback for Granola" → a `pulse-preflight` skill.
+  - **deepen_existing** = a skill name (or skill-like prompt template) appears in sessions but keeps missing the same failure mode. Set `existing_skill_hint` to the skill name. The "what_it_should_do" should be what's MISSING, not the whole skill. Example: existing `/pulse` skill is being used, but every run rediscovers the OAuth pre-flight gap — that's a deepen_existing for `pulse`.
+  - Don't restate observations or behavioral_patterns as skill candidates. A skill candidate is when CODIFYING the fix is meaningfully better than just running the fix. If a one-line config change suffices, it's a quick_win. If a behavioral shift is needed, it's a behavioral_pattern. If a reusable workflow encoding would help, it's a skill_candidate.
+  - Aim for 2-5. Often zero is the right answer — only surface if the codification value is clear.
 - For `per_project`: only projects with ≥3 sessions.
 - No percentages unless the underlying count is ≥10.
 - Behavioral patterns MUST include a comparison ("style A vs style B", "domain X vs domain Y", "early in session vs late", "Codex vs Claude on this task type", "well-formed prompt vs vague prompt", "with-subagent vs without"). Comparison is what makes them insightful rather than descriptive. **A pattern without a comparison is a description, not a pattern — drop it or downgrade to `low` confidence.** "You work mostly at night (54K events vs 8.8K afternoon)" is descriptive ONLY because it has no behavioral comparison; "Night sessions show 2.3× the rate of context-loss waste vs. afternoon sessions" is a real pattern. The control matters: if you can't show that the same person/task in the contrasting condition behaves differently, you don't have a pattern.
@@ -863,6 +881,26 @@ def _validate(parsed: dict, ref_to_id: dict[str, str]) -> dict:
             qw_clean.append(qw)
     parsed["quick_wins"] = qw_clean
 
+    # skill_candidates: same ref-validator pass; drop fabricated refs and
+    # any candidate left with zero supporting sessions. kind must be one
+    # of the two allowed values; default to new_skill if missing.
+    sc_clean: list[dict] = []
+    for sc in parsed.get("skill_candidates") or []:
+        if not isinstance(sc, dict):
+            continue
+        kept_refs, resolved, dropped = _resolve(sc.get("evidence_refs") or [])
+        dropped_total += dropped
+        sc["evidence_refs"] = kept_refs
+        sc["evidence_sessions"] = resolved
+        sc["affected_sessions"] = len(kept_refs)
+        kind = (sc.get("kind") or "new_skill").lower()
+        sc["kind"] = "deepen_existing" if kind == "deepen_existing" else "new_skill"
+        if sc["kind"] != "deepen_existing":
+            sc["existing_skill_hint"] = None
+        if kept_refs:
+            sc_clean.append(sc)
+    parsed["skill_candidates"] = sc_clean
+
     if dropped_total:
         meta = parsed.setdefault("meta", {})
         existing = meta.get("notes") or ""
@@ -941,6 +979,7 @@ def synthesize(
         return {
             "observations": [],
             "quick_wins": [],
+            "skill_candidates": [],
             "per_project": [],
             "meta": {"notes": "No narratives matched filter.", "input_sessions": 0},
         }

@@ -105,6 +105,24 @@ def render_synthesis_text(syn: dict) -> str:
         lines.append("-" * 70)
         lines.append("")
 
+    sc_list = syn.get("skill_candidates") or []
+    if sc_list:
+        lines.append("")
+        lines.append("SKILL CANDIDATES (recurring work worth codifying)")
+        lines.append("")
+        for sc in sc_list:
+            count = sc.get("affected_sessions", "?")
+            kind = sc.get("kind", "new_skill")
+            tag = "NEW" if kind == "new_skill" else f"DEEPEN [{sc.get('existing_skill_hint','?')}]"
+            lines.append(f"  • [{tag} · {count} sessions] {sc.get('title','')}")
+            if sc.get("trigger_pattern"):
+                lines.append(f"      trigger: {sc['trigger_pattern']}")
+            if sc.get("what_it_should_do"):
+                lines.append(f"      should: {sc['what_it_should_do']}")
+            lines.append("")
+        lines.append("-" * 70)
+        lines.append("")
+
     pp_list = syn.get("per_project") or []
     if pp_list:
         lines.append("")
@@ -213,6 +231,29 @@ def render_synthesis_markdown(syn: dict) -> str:
             count = qw.get("affected_sessions", "?")
             parts.append(f"- **[{count} sessions]** {qw.get('fix', '')}")
         parts.append("")
+
+    sc_list = syn.get("skill_candidates") or []
+    if sc_list:
+        parts.append("## Skill candidates")
+        parts.append("")
+        parts.append(
+            "Recurring agent work the data suggests would be better as a "
+            "codified skill — either a new one or a deeper version of one "
+            "you already have."
+        )
+        parts.append("")
+        for sc in sc_list:
+            count = sc.get("affected_sessions", "?")
+            kind = sc.get("kind", "new_skill")
+            tag = "NEW" if kind == "new_skill" else f"DEEPEN `{sc.get('existing_skill_hint','?')}`"
+            parts.append(f"### [{tag} · {count} sessions] {sc.get('title','')}")
+            parts.append("")
+            if sc.get("trigger_pattern"):
+                parts.append(f"**Trigger**: {sc['trigger_pattern']}")
+                parts.append("")
+            if sc.get("what_it_should_do"):
+                parts.append(f"**Should do**: {sc['what_it_should_do']}")
+                parts.append("")
 
     pp_list = syn.get("per_project") or []
     if pp_list:

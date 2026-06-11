@@ -631,6 +631,74 @@ article.observation:last-of-type { border-bottom: 0; }
 }
 .quick-wins .qw-copy:hover { color: var(--warm); border-color: var(--warm-soft); }
 
+.skill-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 14px;
+}
+.skill-card {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--leaf);
+  background: #fbfaf5;
+  padding: 14px 16px;
+  border-radius: 3px;
+}
+.skill-card.sc-deepen { border-left-color: var(--warm); }
+.skill-card .sc-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.skill-card .sc-tag {
+  font-family: var(--sans);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--leaf);
+}
+.skill-card.sc-deepen .sc-tag { color: var(--warm); }
+.skill-card .sc-tag code {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--hint);
+  padding: 1px 4px;
+  border-radius: 2px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.skill-card .sc-count {
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--ink-mute);
+}
+.skill-card .sc-title {
+  font-family: var(--serif);
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 8px 0;
+  color: var(--ink);
+}
+.skill-card .sc-row {
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.5;
+  margin-top: 6px;
+  color: var(--ink);
+}
+.skill-card .sc-lab {
+  display: inline-block;
+  width: 76px;
+  font-weight: 600;
+  color: var(--ink-mute);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  vertical-align: top;
+}
+
 .per-project {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -1799,6 +1867,7 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
     obs_list = synthesis.get("observations") or []
     bp_list = synthesis.get("behavioral_patterns") or []
     qw_list = synthesis.get("quick_wins") or []
+    sc_list = synthesis.get("skill_candidates") or []
     pp_list = synthesis.get("per_project") or []
     meta = synthesis.get("meta", {})
 
@@ -1949,6 +2018,37 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
         if qw_html
         else ""
     )
+    sc_html = ""
+    for sc in sc_list:
+        kind = sc.get("kind", "new_skill")
+        tag_class = "sc-new" if kind == "new_skill" else "sc-deepen"
+        tag_label = (
+            "NEW"
+            if kind == "new_skill"
+            else f"DEEPEN <code>{_esc(sc.get('existing_skill_hint') or '?')}</code>"
+        )
+        n_aff = sc.get("affected_sessions", "?")
+        title = _esc(sc.get("title") or "")
+        trig = _esc(sc.get("trigger_pattern") or "")
+        should = _esc(sc.get("what_it_should_do") or "")
+        sc_html += (
+            f'<article class="skill-card {tag_class}">'
+            f'<div class="sc-head"><span class="sc-tag">{tag_label}</span>'
+            f'<span class="sc-count">{n_aff} sessions</span></div>'
+            f'<h3 class="sc-title">{title}</h3>'
+            + (f'<div class="sc-row"><span class="sc-lab">Trigger</span><span>{trig}</span></div>' if trig else "")
+            + (f'<div class="sc-row"><span class="sc-lab">Should do</span><span>{should}</span></div>' if should else "")
+            + "</article>"
+        )
+    sc_block = (
+        '<section class="block skill-candidates" id="sec-skills">'
+        f'<h2 class="section-title">Skill candidates <span class="count">({len(sc_list)})</span> '
+        f'<span class="section-sub">— recurring work the data says is worth codifying</span></h2>'
+        f'<div class="skill-cards">{sc_html}</div>'
+        "</section>"
+        if sc_html
+        else ""
+    )
     pp_block = (
         '<section class="block">'
         f'<h2 class="section-title">Per project <span class="count">({len(pp_list)})</span></h2>'
@@ -1979,6 +2079,8 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
         nav_chips.append(f'<a href="#sec-behavioral">patterns ({bp_count_str})</a>')
     if qw_html:
         nav_chips.append(f'<a href="#sec-quickwins">quick wins ({len(qw_list)})</a>')
+    if sc_html:
+        nav_chips.append(f'<a href="#sec-skills">skills ({len(sc_list)})</a>')
     if pp_html:
         nav_chips.append(f'<a href="#sec-perproject">projects ({len(pp_list)})</a>')
     if notes:
@@ -2029,6 +2131,7 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
   {obs_block}
   {bp_block}
   {qw_block}
+  {sc_block}
   {pp_block}
   {notes_html_anchored}
 </section>

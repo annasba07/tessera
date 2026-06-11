@@ -12,6 +12,7 @@ import os
 import pytest
 
 from tessera.backends import (
+    AntigravityBackend,
     ClaudeSDKBackend,
     CodexCLIBackend,
     GeminiCLIBackend,
@@ -22,14 +23,15 @@ from tessera.backends import (
 )
 
 
-def test_list_backends_returns_all_three_in_display_order():
-    assert list_backends() == ["claude", "codex", "gemini"]
+def test_list_backends_returns_all_in_display_order():
+    assert list_backends() == ["claude", "codex", "gemini", "antigravity"]
 
 
 def test_get_backend_explicit_name():
     assert isinstance(get_backend("claude"), ClaudeSDKBackend)
     assert isinstance(get_backend("codex"), CodexCLIBackend)
     assert isinstance(get_backend("gemini"), GeminiCLIBackend)
+    assert isinstance(get_backend("antigravity"), AntigravityBackend)
 
 
 def test_get_backend_case_insensitive():
@@ -42,16 +44,22 @@ def test_get_backend_unknown_raises():
         get_backend("ollama")
 
 
-def test_get_backend_defaults_to_claude_when_no_args():
-    """No name, no env var → claude (the historical default)."""
-    # Ensure env var isn't set during the assertion
-    prior = os.environ.pop("TESSERA_BACKEND", None)
-    try:
-        assert isinstance(get_backend(), ClaudeSDKBackend)
-        assert isinstance(get_backend(None), ClaudeSDKBackend)
-    finally:
-        if prior is not None:
-            os.environ["TESSERA_BACKEND"] = prior
+def test_get_backend_no_args_picks_antigravity_if_installed(monkeypatch):
+    """No explicit name → antigravity if `agy` is on PATH, else claude.
+    This is the calibration-audited best on 29-session bake-off."""
+    monkeypatch.delenv("TESSERA_BACKEND", raising=False)
+    # Pretend agy is installed.
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/" + b if b == "agy" else None)
+    assert isinstance(get_backend(), AntigravityBackend)
+    assert isinstance(get_backend(None), AntigravityBackend)
+
+
+def test_get_backend_no_args_falls_back_to_claude_when_agy_missing(monkeypatch):
+    """If `agy` is not installed, fall back to the original claude backend
+    rather than crashing — keeps the published library usable for everyone."""
+    monkeypatch.delenv("TESSERA_BACKEND", raising=False)
+    monkeypatch.setattr("shutil.which", lambda _: None)
+    assert isinstance(get_backend(), ClaudeSDKBackend)
 
 
 def test_get_backend_reads_env_var(monkeypatch):
@@ -72,6 +80,10 @@ def test_default_model_for_known_backends():
     # ChatGPT-subscription auth on codex.
     assert default_model_for("codex") == ""
     assert default_model_for("gemini") == ""
+    # antigravity is a multi-provider runtime. Default is Flash High —
+    # calibration-audited as the best on the 29-session bake-off
+    # (matched ground truth, depth ≈ Claude, ~4× faster).
+    assert default_model_for("antigravity") == "Gemini 3.5 Flash (High)"
 
 
 def test_default_model_for_unknown_falls_back_to_claude():
@@ -100,3 +112,4 @@ def test_backend_available_falls_back_to_path_check(monkeypatch):
     assert get_backend("codex").available() is False
     assert get_backend("gemini").available() is False
     assert get_backend("claude").available() is False
+    assert get_backend("antigravity").available() is False
