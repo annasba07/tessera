@@ -236,8 +236,14 @@ def _run_command(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
-    # Load narratives back and synthesize
-    narratives = load_narratives(narratives_dir)
+    # Load narratives back and synthesize. Filter to THIS run's target set
+    # — load_narratives() slurps every JSON in the dir, so without a filter
+    # an old run's leftover narratives leak into the new synthesis prompt
+    # (observed: 448 narratives loaded under a --limit 50 run, blowing the
+    # 900K-char safety cap on the prompt).
+    target_id_set = set(target_ids)
+    narratives = [n for n in load_narratives(narratives_dir)
+                  if n.get("session_id") in target_id_set]
     if len(narratives) < args.min_sessions:
         print(
             f"error: only {len(narratives)} narratives available for synthesis; "
@@ -1749,8 +1755,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="Min normalized events for a session to qualify.")
     weekly.add_argument("--min-sessions", type=int, default=5,
                         help="Abort if fewer than this many sessions qualify.")
-    weekly.add_argument("--limit", type=int, default=0,
-                        help="Cap at N most-recent qualifying sessions (0 = no cap).")
+    weekly.add_argument("--limit", type=int, default=100,
+                        help="Cap at N most-recent qualifying sessions. "
+                             "Default 100 keeps the synthesis prompt under "
+                             "the 900K-char safety limit on heavy weeks "
+                             "(observed: 453 sessions in 7 days). Use 0 "
+                             "to disable the cap entirely.")
     weekly.add_argument("--backend", default=None, choices=list_backends(),
                         help="LLM backend for all three stages (narrate + synth + eval). "
                              "Options: claude | codex | gemini. Default: claude.")
