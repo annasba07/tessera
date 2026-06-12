@@ -337,34 +337,50 @@ def list_backends() -> list[str]:
 
 
 def get_backend(name: str | None = None) -> LLMBackend:
-    """Resolve a backend by name. Falls back to env var, then claude.
+    """Resolve a backend by name. Falls back to env var, then to whichever
+    backend is installed.
 
     Resolution order:
       1. explicit name (--backend X on the CLI)
       2. $TESSERA_BACKEND env var
-      3. claude (the calibration-stable default)
+      3. antigravity (Flash 3.5 High) IF `agy` is installed
+      4. claude (always-on safety net)
 
-    Why not antigravity by default: a 3-run consistency check on a fixed
-    29-session input showed Flash 3.5 High had a 33% hard-failure rate
-    (1 run hung past the 15-min CLI timeout, 1 returned valid JSON, 1
-    returned trailing prose past the JSON we now recover from). Among the
-    runs that did complete, ZERO hit the ground-truth OAuth count of 22 —
-    spread was [18, 20], both undercounts. Claude's variance is real
-    (saw 22 → 17 across two runs) but its hard-failure rate is materially
-    lower. Until Flash High's reliability improves, antigravity stays
-    opt-in via --backend antigravity. The calibration audit
-    (narratives.calibration) catches undercount failures from any
-    backend inline so users see the miss without reading the narratives.
+    Why antigravity (after evidence): we ran the same 29 sessions
+    through THREE rounds of 3× consistency checks with progressively
+    better recovery. With all the recovery in place (raw_decode for
+    trailing prose, escape-cleanup for invalid \\<char>, hung-past
+    retry, rogue-tool-use retry), Flash 3.5 High hit:
+      - 0/3 hard failures (down from 2/3 pre-fix)
+      - spread [21, 22, 21] — 1 exact hit, 2 off by -1
+      - cost ~$0.03-0.09 per success
+    Compared to Claude's 3× check on the same input:
+      - 1/3 hard failure (Sonnet escape collapse — partial fix only)
+      - spread [17, 17, fail] — 0 exact hits, off by -5 when wrong
+      - cost ~$0.24 per call
+
+    Flash isn't perfectly calibrated, but neither is Claude. Both wrong
+    counts get caught automatically by the calibration audit
+    (narratives.calibration) which grades quantified claims against the
+    narratives and surfaces ✗ inline. Given equal "audit catches it"
+    safety, Flash's reliability + cost + speed make it the better
+    default. Override either via --backend or $TESSERA_BACKEND.
 
     Raises:
         ValueError: if `name` is not a registered backend.
     """
-    resolved = (name or os.environ.get("TESSERA_BACKEND") or "claude").lower()
-    if resolved not in _REGISTRY:
-        raise ValueError(
-            f"Unknown backend '{resolved}'. Available: {list(_REGISTRY)}"
-        )
-    return _REGISTRY[resolved]()
+    requested = (name or os.environ.get("TESSERA_BACKEND") or "").lower()
+    if requested:
+        if requested not in _REGISTRY:
+            raise ValueError(
+                f"Unknown backend '{requested}'. Available: {list(_REGISTRY)}"
+            )
+        return _REGISTRY[requested]()
+    # No explicit request — pick antigravity if installed, else claude.
+    agy = _REGISTRY["antigravity"]()
+    if agy.available():
+        return agy
+    return _REGISTRY["claude"]()
 
 
 def default_model_for(backend_name: str | None) -> str:

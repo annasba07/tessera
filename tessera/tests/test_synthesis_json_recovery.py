@@ -52,6 +52,23 @@ def test_doubled_object_picks_last_via_anchor_recovery():
     assert len(obj["observations"]) == 1
 
 
+def test_invalid_backslash_escape_recovered():
+    """Sonnet 4.6 observed in consistency-check Run 3: emits invalid
+    JSON escapes mid-string like '...domains.\\{' where the bare \\{
+    isn't a valid JSON escape. Recovery strips the offending backslash
+    and re-parses. The valid escapes (\\n, \\\", \\\\) must survive."""
+    raw = (
+        '{"headline":"OAuth blocked 22 sessions",'
+        '"observations":[{"title":"track.\\{kind issue","why":"line1\\nline2"}]}'
+    )
+    obj = _extract_json(raw)
+    assert obj["headline"] == "OAuth blocked 22 sessions"
+    # The invalid \\{ should have been recovered to {
+    assert "{kind" in obj["observations"][0]["title"]
+    # The valid \\n escape should survive intact (interpreted as newline)
+    assert "line1\nline2" == obj["observations"][0]["why"]
+
+
 def test_completely_malformed_raises_with_dump():
     """If we can't recover anything, raise the original JSONDecodeError
     so the synthesizer catches it (and dumps the raw text for the user)."""

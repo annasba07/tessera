@@ -44,15 +44,25 @@ def test_get_backend_unknown_raises():
         get_backend("ollama")
 
 
-def test_get_backend_defaults_to_claude_when_no_args(monkeypatch):
-    """No name, no env var → claude. We tested antigravity (Flash 3.5 High)
-    as a candidate default but the 3× consistency check on a fixed input
-    showed a 33% hard-failure rate and 0/2 calibration matches on the
-    runs that did complete. Defaulting to antigravity would have shipped
-    a 'sometimes works, often wrong' experience by default."""
+def test_get_backend_no_args_picks_antigravity_if_installed(monkeypatch):
+    """No explicit name → antigravity if `agy` is on PATH, else claude.
+
+    Picked after two consistency-check rounds: pre-fix (Flash High had
+    2/3 hard fails) and post-fix (0/3 hard fails, spread [21, 22, 21]).
+    Claude on the same input: 1/3 hard fail, spread [17, 17, fail].
+    Flash now strictly better on this benchmark."""
     monkeypatch.delenv("TESSERA_BACKEND", raising=False)
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/" + b if b == "agy" else None)
+    assert isinstance(get_backend(), AntigravityBackend)
+    assert isinstance(get_backend(None), AntigravityBackend)
+
+
+def test_get_backend_no_args_falls_back_to_claude_when_agy_missing(monkeypatch):
+    """If `agy` isn't installed, fall back to claude. Keeps the published
+    library usable for anyone without antigravity."""
+    monkeypatch.delenv("TESSERA_BACKEND", raising=False)
+    monkeypatch.setattr("shutil.which", lambda _: None)
     assert isinstance(get_backend(), ClaudeSDKBackend)
-    assert isinstance(get_backend(None), ClaudeSDKBackend)
 
 
 def test_get_backend_reads_env_var(monkeypatch):

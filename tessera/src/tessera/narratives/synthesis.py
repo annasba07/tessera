@@ -558,6 +558,32 @@ def _extract_json(raw: str) -> dict:
                     return obj
             except json.JSONDecodeError:
                 pass
+        # Recovery 0.5: Sonnet 4.6 sometimes emits invalid JSON escapes
+        # mid-string. Observed in consistency Run 3: 'domains matching the
+        # client track.\{"kind":"deepen_existing"' — literal '\{' which
+        # isn't a valid JSON escape. Strip any '\' that's followed by
+        # something other than a valid escape char and retry. Safe for
+        # tessera output because legitimate backslashes are rare in
+        # narrative free-text and the cleanup preserves the character.
+        try:
+            cleaned = re.sub(r'\\([^"\\/bfnrtu])', r'\1', text)
+            if cleaned != text:
+                try:
+                    return json.loads(cleaned)
+                except json.JSONDecodeError:
+                    pass
+                # If escape-cleanup didn't fully fix it, try raw_decode
+                # on the cleaned version too.
+                if cleaned.lstrip().startswith("{"):
+                    try:
+                        decoder = json.JSONDecoder()
+                        obj, _end = decoder.raw_decode(cleaned.lstrip())
+                        if isinstance(obj, dict):
+                            return obj
+                    except json.JSONDecodeError:
+                        pass
+        except Exception:
+            pass
         # Recovery 1: Sonnet occasionally collapses mid-output and restarts,
         # leaving partial corrupted JSON followed by a fresh complete one.
         # The schema's required top-level key is "headline" — find every
@@ -638,6 +664,12 @@ _TRANSIENT_FAILURE_SIGNALS = (
     "overloaded_error",
     "Service Unavailable",
     "503 Service",
+    # CLI-backend subprocess timeout (set in backends._CLI_TIMEOUT_SEC).
+    # Observed: agy/Flash 3.5 occasionally chooses to spawn agentic search
+    # tasks instead of producing JSON, then times out at 15 min. The other
+    # 2-of-3 runs on the same input completed in 146s and 209s — a fresh
+    # retry usually succeeds.
+    "hung past",
 )
 
 # Sentinel substrings that mean the backend (agy in particular) decided
