@@ -1757,8 +1757,14 @@ def main(argv: list[str] | None = None) -> int:
     weekly.add_argument("--model", default=DEFAULT_NARRATIVE_MODEL,
                         help="LLM model for narration + synthesis + experiment eval. "
                              "Default picks the backend's recommended model.")
-    weekly.add_argument("--concurrency", type=int, default=10,
-                        help="Parallel per-session narrative extractions.")
+    weekly.add_argument("--concurrency", type=int, default=3,
+                        help="Parallel per-session narrative extractions. "
+                             "Default 3 instead of 10 because CLI backends "
+                             "(antigravity, codex, gemini) share a single "
+                             "auth token; 10 parallel subprocess each trying "
+                             "to refresh OAuth at once can cascade into "
+                             "browser popups. 3 keeps the wall clock reasonable "
+                             "while serializing token reads.")
     weekly.add_argument("--output-dir", default="~/tessera-weekly",
                         help="Where the run's synthesis + narratives + dashboard land.")
     weekly.add_argument("--history-dir", default=str(DEFAULT_DATA_DIR),

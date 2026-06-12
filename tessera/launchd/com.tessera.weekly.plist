@@ -41,7 +41,11 @@
              via pip, uv tool, or homebrew. -->
         <string>/bin/sh</string>
         <string>-lc</string>
-        <string>tessera weekly --no-open</string>
+        <!-- --concurrency 3: CLI backends (agy/codex/gemini) share a
+             single OAuth token; if N parallel subprocess each try to
+             refresh at once the user gets N browser popups. 3 keeps
+             wall clock reasonable while serializing token reads. -->
+        <string>tessera weekly --no-open --concurrency 3</string>
     </array>
 
     <key>EnvironmentVariables</key>
