@@ -2,9 +2,12 @@
 <!--
   Tessera weekly heartbeat (macOS launchd job).
 
-  Fires every Monday at 9:00 local time:
+  Fires every Friday at 15:00 local time:
     tessera weekly  (which runs analysis → evaluates active experiments
                      → opens the dashboard)
+
+  Friday afternoon timing: the week's work is fresh and you have time to
+  read findings + commit experiments before the weekend break.
 
   Install:
     cp launchd/com.tessera.weekly.plist ~/Library/LaunchAgents/
@@ -21,8 +24,9 @@
 
   Customize the schedule by editing the StartCalendarInterval below.
   Common alternatives:
+    - Monday morning:     <key>Weekday</key><integer>1</integer><key>Hour</key><integer>9</integer>
     - Sunday evening:     <key>Weekday</key><integer>0</integer><key>Hour</key><integer>20</integer>
-    - Every weekday 9am:  remove <key>Weekday</key> entry entirely
+    - Every weekday 5pm:  remove <key>Weekday</key> entry entirely
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -48,13 +52,13 @@
         <string>/opt/homebrew/bin:/usr/local/bin:/Users/YOUR_USERNAME/.local/bin:/usr/bin:/bin</string>
     </dict>
 
-    <!-- Mondays at 9am. Day-of-week: 0=Sun, 1=Mon, ..., 6=Sat. -->
+    <!-- Fridays at 3pm. Day-of-week: 0=Sun, 1=Mon, ..., 5=Fri, 6=Sat. -->
     <key>StartCalendarInterval</key>
     <dict>
         <key>Weekday</key>
-        <integer>1</integer>
+        <integer>5</integer>
         <key>Hour</key>
-        <integer>9</integer>
+        <integer>15</integer>
         <key>Minute</key>
         <integer>0</integer>
     </dict>
