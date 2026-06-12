@@ -1263,7 +1263,11 @@ def _doctor_command(args: argparse.Namespace) -> int:
     print("=" * 60)
 
     # 1. LLM backends — at least one must be available
-    print("\nLLM backends (default: claude; pick another via `--backend codex|gemini`):")
+    auto_default = get_backend().name
+    print(
+        f"\nLLM backends (auto-default: {auto_default}; "
+        f"override via --backend {{claude,codex,gemini,antigravity}}):"
+    )
     backend_status = {}
     for bname in list_backends():
         b = get_backend(bname)
