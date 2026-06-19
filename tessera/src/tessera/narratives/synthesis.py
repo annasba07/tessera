@@ -595,20 +595,20 @@ def _extract_json(raw: str) -> dict:
                         pass
         except Exception:
             pass
-        # Recovery 1: Sonnet occasionally collapses mid-output and restarts,
-        # leaving partial corrupted JSON followed by a fresh complete one.
-        # The schema's required top-level key is "headline" — find every
-        # `{"headline"` boundary, try to parse a balanced object from each
-        # (prefer the LAST one — the model's final attempt is usually
-        # the complete one). Return the first that parses.
-        anchors = []
-        i = 0
-        while True:
-            j = text.find('{"headline"', i)
-            if j < 0:
-                break
-            anchors.append(j)
-            i = j + 1
+        # Recovery 1: Sonnet/Flash collapse mid-output, OR agy emits a
+        # short rogue narration prefix before the real JSON. The schema's
+        # required top-level key is `headline` — find every `{` followed
+        # by `"headline"` (possibly with whitespace between, since some
+        # models pretty-print), try to parse a balanced object from each.
+        # Prefer the LAST anchor (model's final attempt). Return the first
+        # that parses.
+        #
+        # Bug fix (2026-06-19): the previous anchor was literal
+        # `{"headline"` which failed on `{\n  "headline":` output. Now
+        # uses a regex that tolerates whitespace.
+        import re as _re
+        _anchor_re = _re.compile(r'\{\s*"headline"')
+        anchors = [m.start() for m in _anchor_re.finditer(text)]
         for start in reversed(anchors):  # last attempt first
             depth = 0
             in_str = False
