@@ -2068,26 +2068,30 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
     else:
         pulse_above = pulse_html
 
-    # Sticky section nav — jump chips for each non-empty block. Page can
-    # have 38+ atomic items; without nav users can't get to per-project
-    # or notes without scrolling past everything.
+    # Sticky section nav — jump chips for each non-empty block. Behavioral
+    # patterns + quick wins are marked .primary because those are the two
+    # sections you act on each Friday (rate them, register experiments).
     nav_chips = []
+    nav_chips.append('<a href="#findings-top">top</a>')
     if obs_html:
         nav_chips.append(f'<a href="#sec-observations">obs ({len(obs_list)})</a>')
     if bp_html:
         bp_count_str = f"{strong_bp_count}" + (f"+{demoted_bp_count}" if demoted_bp_count else "")
-        nav_chips.append(f'<a href="#sec-behavioral">patterns ({bp_count_str})</a>')
+        nav_chips.append(f'<a href="#sec-behavioral" class="primary">patterns ({bp_count_str})</a>')
     if qw_html:
-        nav_chips.append(f'<a href="#sec-quickwins">quick wins ({len(qw_list)})</a>')
+        nav_chips.append(f'<a href="#sec-quickwins" class="primary">quick wins ({len(qw_list)})</a>')
     if sc_html:
-        nav_chips.append(f'<a href="#sec-skills">skills ({len(sc_list)})</a>')
+        nav_chips.append(f'<a href="#sec-skills" class="primary">skills ({len(sc_list)})</a>')
     if pp_html:
         nav_chips.append(f'<a href="#sec-perproject">projects ({len(pp_list)})</a>')
     if notes:
         nav_chips.append('<a href="#sec-notes">notes</a>')
+    # Always render if we have at least one real section (i.e. more than
+    # just the top link). Previously gated on ≥3; for a Monday review the
+    # nav matters even with 2 sections.
     section_nav_html = (
         f'<nav class="section-nav">{"".join(nav_chips)}</nav>'
-        if len(nav_chips) >= 3 else ""
+        if len(nav_chips) >= 2 else ""
     )
 
     # Inject anchor IDs into the section blocks
@@ -2120,7 +2124,7 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
     return f"""
 <section class="view" data-view="findings">
   {pulse_above}
-  <h1 class="headline">{_esc(headline)}</h1>
+  <h1 class="headline" id="findings-top">{_esc(headline)}</h1>
   {pulse_below}
   {section_nav_html}
   {callout_html}
@@ -2672,26 +2676,54 @@ table.sessions td .agent-pill {
   color: var(--ink-mute);
 }
 
-/* Section jump-nav strip — shows up only when ≥3 sections exist. */
+/* Section jump-nav — sticky at top of viewport so it's always reachable
+ * during a Monday/Friday review. Shows up when ≥2 sections exist (was
+ * ≥3 — too aggressive for shorter syntheses). */
 .section-nav {
+  position: sticky;
+  top: 0;
+  z-index: 50;
   display: flex;
-  gap: 14px;
+  gap: 18px;
   flex-wrap: wrap;
-  margin: 0 0 28px 0;
-  padding: 8px 0;
+  margin: 0 -32px 28px -32px;
+  padding: 12px 32px;
+  background: var(--paper);
   border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--line-strong);
+  box-shadow: 0 2px 6px rgba(125, 58, 0, 0.04);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 13px;
   letter-spacing: 0.04em;
+  align-items: baseline;
+}
+.section-nav::before {
+  content: "JUMP TO";
+  color: var(--ink-mute);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  font-weight: 600;
+  margin-right: 4px;
+  align-self: center;
 }
 .section-nav a {
-  color: var(--ink-soft);
+  color: var(--ink);
   text-decoration: none;
-  padding: 2px 0;
+  padding: 3px 2px;
   border-bottom: 1px dotted transparent;
+  font-weight: 500;
 }
-.section-nav a:hover { color: var(--warm); border-bottom-color: var(--warm-soft); }
+.section-nav a:hover {
+  color: var(--warm);
+  border-bottom-color: var(--warm);
+}
+.section-nav a.primary {
+  /* Highlight behaviour patterns + quick wins — the two sections users
+   * act on each Friday. Subtler tint, not a chip. */
+  color: var(--warm);
+  font-weight: 600;
+}
+.section-nav a.primary:hover { border-bottom-color: var(--warm); }
 
 /* Aggregate strip hierarchy: primary stats (Sessions/Obs/Patterns) big,
  * secondary stats (Quick wins / Projects / Active min) muted, fab warn
