@@ -250,6 +250,27 @@ class Logbook:
     def log_note(self, text: str, **context: Any) -> str:
         return self.append("note", text=text, **context)
 
+    def log_artifact_change(
+        self,
+        event: Literal["artifact.created", "artifact.modified"],
+        kind: str,
+        path: str,
+        content_hash: str,
+        prev_hash: str | None = None,
+        title_hint: str = "",
+    ) -> str:
+        """Record that the user created or edited an agent-skill / CLAUDE.md
+        file between runs. Lets the next synthesis credit/discredit
+        experiments based on what the user actually built."""
+        return self.append(
+            event,
+            kind=kind,
+            path=path,
+            hash=content_hash,
+            prev_hash=prev_hash,
+            title_hint=title_hint,
+        )
+
 
 # Module-level convenience instance. Most callers use this directly.
 _default: Logbook | None = None

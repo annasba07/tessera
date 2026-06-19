@@ -1135,6 +1135,43 @@ def _weekly_command(args: argparse.Namespace) -> int:
     from .experiments import ExperimentStore, evaluate_pending
 
     # 1. Run the analysis pass
+    # Pre-step: scan for skill / CLAUDE.md changes since last run, log them,
+    # and stash the summary so it can be fed into the synthesis prompt
+    # below. This is how Tessera knows "the user built skill X in response
+    # to last week's insight Y" without an explicit log command.
+    try:
+        from .artifacts import (
+            ArtifactTracker,
+            discover_project_paths_from_narrative_cache,
+            summarize_recent_events,
+        )
+        from .logbook import default as _logbook_default
+        from .narratives import DEFAULT_CACHE_DIR
+        project_paths = discover_project_paths_from_narrative_cache(DEFAULT_CACHE_DIR)
+        tracker = ArtifactTracker()
+        artifact_events = tracker.scan(project_paths=project_paths)
+        if artifact_events:
+            print(
+                f"\n=== Tessera weekly · pre: detected {len(artifact_events)} "
+                f"artifact change(s) since last run ===\n",
+                file=sys.stderr,
+            )
+            print(summarize_recent_events(artifact_events), file=sys.stderr)
+            lb = _logbook_default()
+            for ev in artifact_events:
+                try:
+                    lb.log_artifact_change(
+                        event=ev.event, kind=ev.kind, path=ev.path,
+                        content_hash=ev.hash, prev_hash=ev.prev_hash,
+                        title_hint=ev.title_hint,
+                    )
+                except Exception:
+                    pass
+    except Exception as exc:
+        # Artifact scanning is a "nice to have" — never block the loop on it.
+        print(f"  (artifact scan skipped: {exc})", file=sys.stderr)
+        artifact_events = []
+
     print("\n=== Tessera weekly · step 1/3: analysis ===\n", file=sys.stderr)
     run_args = argparse.Namespace(
         lookback_days=args.lookback_days,
@@ -1249,6 +1286,75 @@ def _weekly_command(args: argparse.Namespace) -> int:
         "\n  Next week's `tessera weekly` will evaluate whether they worked.",
         file=sys.stderr,
     )
+    return 0
+
+
+def _artifacts_scan_command(args: argparse.Namespace) -> int:
+    """Scan watch targets + emit artifact change events to the logbook.
+
+    Closes the "user took an action in response to an insight" loop —
+    the synthesis prompt for next week can include these so the model
+    knows what the user actually built between runs."""
+    from .artifacts import (
+        ArtifactTracker,
+        discover_project_paths_from_narrative_cache,
+        summarize_recent_events,
+    )
+    from .logbook import default as _logbook_default
+
+    cache_dir = Path(args.cache_dir).expanduser()
+    project_paths = discover_project_paths_from_narrative_cache(cache_dir)
+    tracker = ArtifactTracker()
+    events = tracker.scan(project_paths=project_paths)
+
+    if not events:
+        print("artifacts: no new or modified skill / CLAUDE.md files since last scan.")
+        return 0
+
+    print(f"artifacts: detected {len(events)} change(s):")
+    print(summarize_recent_events(events))
+
+    if not args.no_logbook:
+        lb = _logbook_default()
+        for ev in events:
+            try:
+                lb.log_artifact_change(
+                    event=ev.event,
+                    kind=ev.kind,
+                    path=ev.path,
+                    content_hash=ev.hash,
+                    prev_hash=ev.prev_hash,
+                    title_hint=ev.title_hint,
+                )
+            except Exception as exc:
+                print(f"  (failed to log {ev.path}: {exc})", file=sys.stderr)
+        print(f"  → logged to {lb.path}")
+    return 0
+
+
+def _artifacts_list_command(args: argparse.Namespace) -> int:
+    """Show every artifact tessera is currently tracking + when it was
+    last seen unchanged."""
+    from .artifacts import ArtifactTracker
+
+    tracker = ArtifactTracker()
+    artifacts = tracker.state.get("artifacts", {})
+    if not artifacts:
+        print(
+            "artifacts: nothing tracked yet. Run `tessera artifacts scan` to "
+            "seed the tracker (or run `tessera weekly` — it auto-scans)."
+        )
+        return 0
+    by_kind: dict[str, list[tuple[str, dict]]] = {}
+    for path, meta in artifacts.items():
+        by_kind.setdefault(meta.get("kind", "?"), []).append((path, meta))
+    print(f"artifacts: tracking {len(artifacts)} file(s)\n")
+    for kind, items in sorted(by_kind.items()):
+        print(f"  {kind} ({len(items)}):")
+        for path, meta in sorted(items):
+            last = (meta.get("last_seen") or "")[:10]
+            print(f"    {last}  {path}")
+        print()
     return 0
 
 
@@ -1740,6 +1846,41 @@ def main(argv: list[str] | None = None) -> int:
     log.add_argument("--json", action="store_true",
                     help="Raw JSONL output for piping into jq.")
     log.set_defaults(func=_logbook_command)
+
+    # ---- artifacts (skill + CLAUDE.md tracker) ----
+    art = sub.add_parser(
+        "artifacts",
+        help="Scan for newly-created or modified agent skills + project "
+             "CLAUDE.md files since last run. Closes the loop on 'user "
+             "took an action in response to an insight' — without this, "
+             "next week's evaluator has to infer adherence purely from "
+             "session behavior. Auto-runs at the start of `tessera weekly`.",
+    )
+    art_sub = art.add_subparsers(dest="artifacts_subcommand", required=True)
+
+    art_scan = art_sub.add_parser(
+        "scan",
+        help="Scan watch targets and emit artifact.created/modified events "
+             "to the logbook. Idempotent — calling twice reports nothing "
+             "the second time unless something changed in between.",
+    )
+    art_scan.add_argument(
+        "--cache-dir", default=str(DEFAULT_CACHE_DIR),
+        help=f"Narrative cache to read project_path values from "
+             f"(default {DEFAULT_CACHE_DIR}).",
+    )
+    art_scan.add_argument(
+        "--no-logbook", action="store_true",
+        help="Print detected events to stdout but don't write to logbook.",
+    )
+    art_scan.set_defaults(func=_artifacts_scan_command)
+
+    art_list = art_sub.add_parser(
+        "list",
+        help="Show tracked artifacts (what tessera is currently watching) "
+             "and when they were last modified.",
+    )
+    art_list.set_defaults(func=_artifacts_list_command)
 
     # ---- weekly (the closed loop) ----
     weekly = sub.add_parser(
