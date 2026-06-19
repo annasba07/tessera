@@ -187,6 +187,17 @@ Return ONE JSON object. No markdown fence. No preamble:
 - No percentages unless the underlying count is ≥10.
 - Behavioral patterns MUST include a comparison ("style A vs style B", "domain X vs domain Y", "early in session vs late", "Codex vs Claude on this task type", "well-formed prompt vs vague prompt", "with-subagent vs without"). Comparison is what makes them insightful rather than descriptive. **A pattern without a comparison is a description, not a pattern — drop it or downgrade to `low` confidence.** "You work mostly at night (54K events vs 8.8K afternoon)" is descriptive ONLY because it has no behavioral comparison; "Night sessions show 2.3× the rate of context-loss waste vs. afternoon sessions" is a real pattern. The control matters: if you can't show that the same person/task in the contrasting condition behaves differently, you don't have a pattern.
 
+- **MANDATORY METRICS: every behavioral pattern's `pattern` field must include at least TWO specific numeric values on the comparison — one per side.** Counts, percentages, ratios, event-counts, time-deltas, error rates — whatever is grounded in the input narratives. The numbers are how this differs from advice / horoscope writing. Examples of the bar:
+  - GOOD: "When you open with 'try X' (47 sessions), median dead-ends=2.3 and time-to-first-progress=8.4 events. When you open with 'goal is Y, constraints are Z' (34 sessions), median dead-ends=0.6, TTFP=3.1. Goal-first is 2.7× more efficient."
+  - GOOD: "Subagent-zero sessions (49/50, 98%) average 41 events to completion. The one delegated session (S018, 1/50, 2%) consumed 4,594 events across 219 subagents. The bimodal distribution wastes both modes' strengths."
+  - BAD (drop or low): "User has a binary delegation style." (no numbers)
+  - BAD (drop or low): "Slack vigilance is higher than Gmail vigilance." (no numbers)
+  - BAD (drop or low): "Afternoon sessions tend to be longer." (one-sided, no comparison metrics)
+
+- **MANDATORY MEASURABLE EXPERIMENT: every `experiment_to_try` must specify the exact metric to compare next week.** "Try X next week" is not measurable. "On Mon-Wed do X, log metric M; on Thu-Fri do Y, compare M in next dashboard" IS measurable. The point of the experiment field is that the next-week evaluator can read your dashboard and judge effect by reading M. If you can't name M, you don't have a real experiment — replace with one you can.
+
+- **Framing reminder — agent-USE quality, not life advice.** You are helping someone improve how they USE coding agents (Claude Code, Codex, Gemini, Antigravity). Insights that translate to "edit a prompt", "add a skill", "intervene earlier", "verify differently", "delegate this kind of task" are gold. Insights that translate to "go to bed earlier" or "work less weekends" are not what this user paid for. Stay in the lane of: prompting style, tool selection, intervention timing, delegation patterns, verification discipline, error-recovery patterns, context provision, iteration vs one-shot strategy, agent/model choice per task. If a pattern doesn't map to one of those levers, it's noise.
+
 ## Aggregate stats (already computed — trust, don't recount)
 
 {aggregate_block}

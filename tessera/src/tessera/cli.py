@@ -1564,16 +1564,54 @@ def _synthesize_command(args: argparse.Namespace) -> int:
         prior_context = (prior_context or "") + "\n\n## Active self-experiments\n" + exp_text
         print("       → including active experiments as context.", file=sys.stderr)
 
-    print(f"[2/2] Asking {backend.name}/{args.model} for cross-session synthesis...", file=sys.stderr)
-    t0 = time.monotonic()
-    result = synthesize(
-        narratives,
-        model=args.model,
-        backend=backend,
-        project_filter=args.project,
-        prior_context=prior_context,
-    )
-    print(f"       → done in {time.monotonic() - t0:.1f}s", file=sys.stderr)
+    if getattr(args, "multi_lens", False):
+        from .multilens import LENSES, multilens_synthesize
+        print(
+            f"[2/2] Multi-lens synthesis via {backend.name}/{args.model} "
+            f"— {len(LENSES)} parallel lens calls + 1 merge "
+            f"(target {args.multi_lens_target} patterns)...",
+            file=sys.stderr,
+        )
+        t0 = time.monotonic()
+        if args.project:
+            needle = args.project.lower()
+            narratives = [
+                n for n in narratives
+                if needle in (n.get("project_label") or "").lower()
+            ]
+        result = multilens_synthesize(
+            narratives,
+            backend=backend,
+            model=args.model,
+            prior_context=prior_context,
+            target_count=args.multi_lens_target,
+        )
+        print(f"       → done in {time.monotonic() - t0:.1f}s", file=sys.stderr)
+        ml_meta = result.get("meta", {}).get("multilens", {})
+        if ml_meta:
+            counts = ml_meta.get("per_lens_bp_counts", {})
+            print(
+                f"       → per-lens BP counts: {counts}",
+                file=sys.stderr,
+            )
+            errors = ml_meta.get("errors") or []
+            if errors:
+                for err in errors:
+                    print(
+                        f"       ✗ lens {err.get('lens')} errored: {err.get('error')}",
+                        file=sys.stderr,
+                    )
+    else:
+        print(f"[2/2] Asking {backend.name}/{args.model} for cross-session synthesis...", file=sys.stderr)
+        t0 = time.monotonic()
+        result = synthesize(
+            narratives,
+            model=args.model,
+            backend=backend,
+            project_filter=args.project,
+            prior_context=prior_context,
+        )
+        print(f"       → done in {time.monotonic() - t0:.1f}s", file=sys.stderr)
 
     output_path = Path(args.output).expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1795,6 +1833,21 @@ def main(argv: list[str] | None = None) -> int:
                            help="How many prior runs to feed back as context.")
     synthesize.add_argument("--no-history", action="store_true",
                            help="Skip prior-run context and don't save to history.")
+    synthesize.add_argument(
+        "--multi-lens", action="store_true",
+        help="Run focused single-lens synthesis calls in parallel "
+             "(one per dimension: prompting, delegation, verification, "
+             "intervention, error-recovery, tool-selection, "
+             "cognitive-arc), then merge + rank. Costs ~6× a single "
+             "synth call (~$0.20 on Flash High) but produces deeper "
+             "per-dimension patterns. Default off.",
+    )
+    synthesize.add_argument(
+        "--multi-lens-target", type=int, default=12,
+        help="Target number of patterns after the merge pass. "
+             "Quality > count: if fewer survive dedup, you get fewer. "
+             "Only matters when --multi-lens is set.",
+    )
     synthesize.set_defaults(func=_synthesize_command)
 
     # ---- eval ----
