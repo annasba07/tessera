@@ -1541,7 +1541,25 @@ def _synthesize_command(args: argparse.Namespace) -> int:
         return 1
     print(f"[1/2] Loading narratives from {narratives_dir}...", file=sys.stderr)
     narratives = load_narratives(narratives_dir)
-    print(f"       → {len(narratives)} narratives loaded.", file=sys.stderr)
+    n_loaded = len(narratives)
+    # Defensive cap: an accumulated narratives dir (multiple weekly runs
+    # left their outputs behind) can balloon to 100+ files, each ~6KB.
+    # Multi-lens prompts at 150+ narratives → 900K+ chars → rogue model
+    # behavior. Trim to the synth_limit (default 50) most-recent by
+    # ended_at / started_at field.
+    if getattr(args, "synth_limit", 0) and n_loaded > args.synth_limit:
+        narratives.sort(
+            key=lambda n: n.get("ended_at") or n.get("started_at") or "",
+            reverse=True,
+        )
+        narratives = narratives[: args.synth_limit]
+        print(
+            f"       → {n_loaded} loaded; capped to {len(narratives)} most-recent "
+            f"(--synth-limit). Use --synth-limit 0 to disable.",
+            file=sys.stderr,
+        )
+    else:
+        print(f"       → {n_loaded} narratives loaded.", file=sys.stderr)
     if args.project:
         print(f"       → filtering on project substring: {args.project!r}", file=sys.stderr)
 
@@ -1833,6 +1851,13 @@ def main(argv: list[str] | None = None) -> int:
                            help="How many prior runs to feed back as context.")
     synthesize.add_argument("--no-history", action="store_true",
                            help="Skip prior-run context and don't save to history.")
+    synthesize.add_argument(
+        "--synth-limit", type=int, default=50,
+        help="Cap narratives at N most-recent before building the synthesis "
+             "prompt. Default 50 — keeps prompt size under ~300KB and avoids "
+             "the rogue-tool-use failure mode (observed at 150+ narratives). "
+             "Use 0 to disable the cap.",
+    )
     synthesize.add_argument(
         "--multi-lens", action="store_true",
         help="Run focused single-lens synthesis calls in parallel "

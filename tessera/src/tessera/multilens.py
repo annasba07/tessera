@@ -188,7 +188,9 @@ def _build_lens_prompt(
     prior_block = _build_prior_context_block(prior_context)
     n_sessions = len(narratives)
     n_pad = max(3, len(str(n_sessions)))
-    return f"""You are reading {n_sessions} narrative summaries of one person's AI coding agent sessions, with ONE focused goal: find 3-5 strong behavioral patterns in ONE dimension only.
+    return f"""## CRITICAL: This is an analysis task with a strict response format. Do NOT use tools. Do NOT spawn scripts. Do NOT search the filesystem for the data — the complete narrative set is already in this prompt below. Read the data from this prompt, then output ONE JSON object. If you find yourself wanting to write a Python script, you have misread the task — re-read this paragraph.
+
+You are reading {n_sessions} narrative summaries of one person's AI coding agent sessions, with ONE focused goal: find 3-5 strong behavioral patterns in ONE dimension only.
 
 ## Your dimension: {lens.name}
 
@@ -389,13 +391,17 @@ async def multilens_synthesize_async(
     prior_context: str | None = None,
     lenses: tuple[Lens, ...] = LENSES,
     target_count: int = 12,
-    parallelism: int = 3,
+    parallelism: int = 1,
 ) -> dict[str, Any]:
     """Async entry. Runs each lens with bounded parallelism, then merges.
 
-    Parallelism is bounded because most backends share a single auth/CLI
-    session; spawning 7 simultaneous agy subprocesses replays the
-    auth-popup cascade we hit before."""
+    Parallelism default = 1 (sequential) after observing that parallel
+    agy subprocesses don't just share auth — they each independently
+    decide to spawn data-analysis scripts when the lens prompt feels
+    'investigative.' Sequential calls give the model less excuse to
+    treat the task as agentic + share token state cleanly. Wall-clock
+    impact: 7 × ~2 min = ~14 min instead of ~5 min for the lens phase.
+    Worth the reliability."""
     backend = backend or get_backend()
     effective_model = model or backend.default_model
 
