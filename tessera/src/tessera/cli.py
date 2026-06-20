@@ -400,9 +400,24 @@ def _run_command(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
+    # Surface prior-history ratings on matching patterns ("you rated
+    # this useful on June 7"). Compose them server-side from the
+    # history store so the JS doesn't have to load anything.
+    prior_ratings_by_key = None
+    try:
+        from .narratives.dashboard import _collect_prior_ratings_by_key
+        store_for_priors = HistoryStore(Path(args.history_dir).expanduser())
+        prior_ratings_by_key = _collect_prior_ratings_by_key(store_for_priors)
+    except Exception:
+        prior_ratings_by_key = None
+
     html_path = output_path.with_suffix(".html")
     html_path.write_text(
-        render_dashboard(synthesis, narratives, all_narratives=all_narratives),
+        render_dashboard(
+            synthesis, narratives,
+            all_narratives=all_narratives,
+            prior_ratings_by_key=prior_ratings_by_key,
+        ),
         encoding="utf-8",
     )
     print(
@@ -998,11 +1013,13 @@ def _dashboard_command(args: argparse.Namespace) -> int:
         if args.cache_dir
         else DEFAULT_CACHE_DIR
     )
+    history_dir = Path(getattr(args, "history_dir", DEFAULT_DATA_DIR)).expanduser()
     target = write_dashboard(
         synthesis_path,
         narratives_dir,
         output_path,
         cache_dir=cache_dir if cache_dir.exists() else None,
+        history_dir=history_dir if history_dir.exists() else None,
     )
     print(f"→ wrote {target}  (open in any browser)", file=sys.stderr)
     return 0
@@ -1262,11 +1279,13 @@ def _weekly_command(args: argparse.Namespace) -> int:
     if synthesis_path.exists() and narratives_dir.exists():
         try:
             from .narratives.dashboard import write_dashboard
+            history_dir = Path(args.history_dir).expanduser()
             write_dashboard(
                 synthesis_path,
                 narratives_dir,
                 dashboard,
                 cache_dir=DEFAULT_CACHE_DIR if DEFAULT_CACHE_DIR.exists() else None,
+                history_dir=history_dir if history_dir.exists() else None,
             )
             print("  Re-rendered dashboard with latest experiment verdicts.", file=sys.stderr)
         except Exception as exc:

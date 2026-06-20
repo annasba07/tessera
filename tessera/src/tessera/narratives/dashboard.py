@@ -881,6 +881,28 @@ article.observation:hover {
 .rate-row button.active.known   { background: var(--warm-soft); color: #fff; border-color: var(--warm-soft); }
 .rate-row button.active.skip    { background: var(--ink-mute); color: #fff; border-color: var(--ink-mute); }
 
+/* Inherited from a prior dashboard (different file) or prior history
+ * run. Dotted outline + dim fill so it's visually distinct from a
+ * confirmed current-session rating but still clearly carries the prior
+ * judgment. Click the same rating button to confirm + claim it for
+ * this run's SAVE. */
+.rate-row button.inherited.useful  { background: rgba(74,106,58,0.18); color: var(--leaf); border-color: var(--leaf); border-style: dotted; }
+.rate-row button.inherited.wrong   { background: rgba(196,77,49,0.16); color: var(--rust); border-color: var(--rust); border-style: dotted; }
+.rate-row button.inherited.known   { background: rgba(184,121,74,0.18); color: var(--warm); border-color: var(--warm-soft); border-style: dotted; }
+.rate-row button.inherited.skip    { background: rgba(120,108,99,0.15); color: var(--ink-mute); border-color: var(--ink-mute); border-style: dotted; }
+.inherited-badge {
+  display: inline-block;
+  margin-left: 10px;
+  padding: 2px 7px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-mute);
+  border: 1px dotted var(--line-strong);
+  border-radius: 3px;
+  cursor: help;
+  letter-spacing: 0.04em;
+}
+
 /* Floating "save ratings" button (only visible when ≥1 rating made) */
 .rate-sync {
   position: fixed;
@@ -2123,10 +2145,10 @@ def _render_findings_section(synthesis: dict, narratives: list[dict]) -> str:
 
     return f"""
 <section class="view" data-view="findings">
+  {section_nav_html}
   {pulse_above}
   <h1 class="headline" id="findings-top">{_esc(headline)}</h1>
   {pulse_below}
-  {section_nav_html}
   {callout_html}
   {experiments_html}
   {changelog_html}
@@ -2179,6 +2201,8 @@ def render_dashboard(
     synthesis: dict,
     narratives: list[dict],
     all_narratives: list[dict] | None = None,
+    *,
+    prior_ratings_by_key: dict[str, list[dict]] | None = None,
 ) -> str:
     """Build the unified self-contained tessera dashboard.
 
@@ -2191,6 +2215,15 @@ def render_dashboard(
     The Findings view always reflects the current synthesis run. The Explore
     view shows everything the user has ever extracted, so they can browse
     older sessions even when their weekly synthesis is just the last 30 days.
+
+    Args:
+        prior_ratings_by_key: optional dict mapping ``_observation_key`` →
+            list of prior rating events ``[{"slug": ..., "rating": ...,
+            "date": ..., "source": "history"|"localstorage"}]``. When set,
+            patterns matching a key are pre-marked in the dashboard with
+            an "inherited" badge and the prior rating becomes the default
+            unless the user explicitly re-rates. Avoids losing rating work
+            across dashboard renders.
     """
     if all_narratives is None:
         all_narratives = narratives
@@ -2280,6 +2313,11 @@ def render_dashboard(
     embed = {
         "sessions": [_expanded_session_for_explore(n) for n in all_narratives],
         "run_slug": meta.get("run_slug") or "latest",
+        # Prior-history ratings keyed by observation key. Rendering JS
+        # uses this to show "↺ rated useful on 2026-06-07" badges on
+        # any pattern the user previously rated in another run that
+        # shares the same content hash.
+        "prior_ratings": prior_ratings_by_key or {},
     }
 
     primary_nav = (
@@ -2348,6 +2386,8 @@ def write_dashboard(
     narratives_dir: Path,
     output_path: Path | None = None,
     cache_dir: Path | None = None,
+    *,
+    history_dir: Path | None = None,
 ) -> Path:
     """Read synthesis + narratives from disk, write the unified dashboard HTML.
 
@@ -2359,6 +2399,11 @@ def write_dashboard(
     If ``cache_dir`` is provided, Explore will show all cached narratives
     (the user's full history), not just the sessions in the current synthesis
     window. Findings always reflects the current synthesis run.
+
+    If ``history_dir`` is provided, prior-run ratings are loaded and
+    surfaced as "inherited" markers on matching patterns (matching by
+    ``_observation_key``). Reduces lost-work pain when the user rates
+    across multiple dashboard renders.
     """
     synthesis = json.loads(synthesis_path.read_text(encoding="utf-8"))
     narratives: list[dict] = []
@@ -2381,12 +2426,65 @@ def write_dashboard(
                 merged[sid] = payload
         all_narratives = list(merged.values())
 
+    # Load prior ratings from the history store so the dashboard can
+    # surface "you rated this useful on June 7" inline, even if the
+    # synthesis being rendered is brand-new.
+    prior_ratings_by_key: dict[str, list[dict]] | None = None
+    if history_dir is not None:
+        try:
+            from ..history import HistoryStore
+            prior_ratings_by_key = _collect_prior_ratings_by_key(
+                HistoryStore(history_dir)
+            )
+        except Exception:
+            prior_ratings_by_key = None
+
     target = output_path or synthesis_path.with_suffix(".html")
     target.write_text(
-        render_dashboard(synthesis, narratives, all_narratives=all_narratives),
+        render_dashboard(
+            synthesis,
+            narratives,
+            all_narratives=all_narratives,
+            prior_ratings_by_key=prior_ratings_by_key,
+        ),
         encoding="utf-8",
     )
     return target
+
+
+def _collect_prior_ratings_by_key(history_store) -> dict[str, list[dict]]:
+    """Walk every run in the history store, gather ratings, index by
+    observation key. Most-recent first within each key list."""
+    out: dict[str, list[dict]] = {}
+    try:
+        entries = history_store._read_index()
+    except Exception:
+        return out
+    for entry in entries:
+        slug = entry.get("slug")
+        if not slug:
+            continue
+        try:
+            ratings = history_store.load_ratings(slug)
+        except Exception:
+            continue
+        when = entry.get("timestamp") or ""
+        for r in ratings or []:
+            key = r.get("key")
+            rating = r.get("rating")
+            if not key or not rating:
+                continue
+            out.setdefault(key, []).append({
+                "slug": slug,
+                "date": when[:10],
+                "rating": rating,
+                "source": "history",
+                "title": r.get("title", ""),
+            })
+    # Sort each list by date desc so the head is the most recent.
+    for v in out.values():
+        v.sort(key=lambda r: r.get("date", ""), reverse=True)
+    return out
 
 
 # ============================================================================
@@ -3748,6 +3846,10 @@ COMBINED_JS = r"""
   // ---------- Inline rating ----------
   const RUN_SLUG = (D.run_slug) || 'latest';
   const STORAGE_KEY = 'tessera-ratings::' + RUN_SLUG;
+  // Prior ratings embedded at render-time from the history store:
+  //   { obs_key: [{slug, rating, date, source}] }
+  // Empty unless dashboard was rendered with prior_ratings_by_key.
+  const PRIOR_RATINGS = (typeof D.prior_ratings === 'object' && D.prior_ratings) || {};
 
   function loadRatings() {
     try {
@@ -3757,6 +3859,53 @@ COMBINED_JS = r"""
   function saveRatings(state) {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
   }
+
+  // Scan ALL tessera-ratings::* localStorage entries to catch ratings
+  // the user made on a different dashboard file for overlapping
+  // patterns. Most-recent slug wins on collision. Combined with
+  // PRIOR_RATINGS (server-side) below, gives the user one consolidated
+  // 'inherited rating' view per pattern.
+  function loadInheritedFromAllStorage() {
+    const inherited = {}; // obs_key → {slug, rating, source: 'localstorage'}
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith('tessera-ratings::')) continue;
+      if (k === STORAGE_KEY) continue; // current dashboard handled separately
+      let data;
+      try { data = JSON.parse(localStorage.getItem(k) || '{}'); }
+      catch (e) { continue; }
+      const slug = k.substring('tessera-ratings::'.length);
+      for (const [obsKey, v] of Object.entries(data)) {
+        if (!v || !v.rating) continue;
+        // Don't overwrite an inherited rating from a more-recent slug.
+        // We compare slug lexicographically — slugs are ISO timestamps
+        // so this approximates "most recent wins".
+        const cur = inherited[obsKey];
+        if (!cur || slug > cur.slug) {
+          inherited[obsKey] = { slug: slug, rating: v.rating, source: 'localstorage' };
+        }
+      }
+    }
+    return inherited;
+  }
+
+  // Merge the two inheritance sources. PRIOR_RATINGS comes from
+  // ~/.config/tessera/history/ratings/*.json (durable, paste-saved).
+  // localStorage source comes from un-paste-saved clicks on other
+  // dashboards. Durable wins ties because the user committed to it.
+  function buildInheritedMap() {
+    const m = {};
+    const ls = loadInheritedFromAllStorage();
+    for (const [k, v] of Object.entries(ls)) m[k] = v;
+    for (const [k, list] of Object.entries(PRIOR_RATINGS)) {
+      if (!list || !list.length) continue;
+      // PRIOR_RATINGS entries are pre-sorted with most recent first.
+      const head = list[0];
+      m[k] = { slug: head.slug || '', rating: head.rating, date: head.date || '', source: 'history' };
+    }
+    return m;
+  }
+  const INHERITED = buildInheritedMap();
   function refreshSync() {
     const state = loadRatings();
     const n = Object.keys(state).length;
@@ -3802,6 +3951,23 @@ COMBINED_JS = r"""
     if (existing) {
       const btn = row.querySelector('button[data-rate="' + existing.rating + '"]');
       if (btn) btn.classList.add('active', existing.rating);
+    } else if (INHERITED[key]) {
+      // Inherited from another dashboard or prior history run. Show the
+      // rating button in 'inherited' style — visually distinct from a
+      // current-session rating, doesn't count toward the SAVE counter
+      // until the user explicitly confirms by clicking again.
+      const inh = INHERITED[key];
+      const btn = row.querySelector('button[data-rate="' + inh.rating + '"]');
+      if (btn) btn.classList.add('inherited', inh.rating);
+      let badge = document.createElement('span');
+      badge.className = 'inherited-badge';
+      const when = (inh.date && inh.date.length >= 10) ? inh.date.substring(0, 10)
+                 : (inh.slug && inh.slug.length >= 10) ? inh.slug.substring(0, 10)
+                 : 'prior session';
+      const sourceLabel = inh.source === 'history' ? 'rated' : 'tagged';
+      badge.textContent = '↺ ' + sourceLabel + ' ' + inh.rating + ' on ' + when + ' — click to confirm';
+      badge.title = 'Inherited from a prior dashboard or saved rating. Click the same rating button to confirm it counts for this run.';
+      row.appendChild(badge);
     }
     row.querySelectorAll('button[data-rate]').forEach(function(btn) {
       btn.addEventListener('click', function() {
