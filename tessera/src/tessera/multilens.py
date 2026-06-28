@@ -40,6 +40,7 @@ from .narratives.synthesis import (
     _build_prior_context_block,
     _build_ref_map,
     _build_sessions_block,
+    _call_llm,
     _extract_json,
     _validate,
 )
@@ -82,11 +83,15 @@ LENSES: tuple[Lens, ...] = (
         key="delegation",
         name="Delegation & subagents",
         focus=(
-            "When does the user delegate to subagents vs work inline? Compare "
-            "tasks where delegation paid off (lower event count for "
-            "comparable work) vs tasks where it backfired (high subagent "
-            "count + high dead-ends). Also: WHY zero-subagent on multi-source "
-            "work that could parallelize."
+            "Read each narrative's subagent_count and tool calls. Surface "
+            "patterns about when the user does or doesn't use subagents. "
+            "Two questions to answer from the data already in this prompt: "
+            "(1) the sessions where subagents WERE used — were they "
+            "efficient or did they backfire (high subagent_count plus high "
+            "dead_ends)? (2) the sessions with multi-source / parallel-able "
+            "work but zero subagents — what was the event count cost? "
+            "Use the numbers reported in each narrative; don't try to "
+            "compute aggregates yourself."
         ),
         signals=(
             "subagent_count, subagent_event_count, subagent_types_spawned, "
@@ -129,10 +134,14 @@ LENSES: tuple[Lens, ...] = (
         key="error_recovery",
         name="Error recovery patterns",
         focus=(
-            "After a dead-end or tool failure, what does the user/agent do? "
-            "Compare 'pivot to alternative source' vs 'retry same approach' "
-            "vs 'abort'. Quantify the event overhead of each strategy. Look "
-            "for permission-wall and credential-failure cascades."
+            "Read each narrative's dead_ends + recurring_environmental_issues "
+            "+ counterfactual fields. After a failure, sessions describe "
+            "the recovery path. Surface patterns about which recovery path "
+            "the user picked and the event-cost reported in each narrative. "
+            "Three recovery shapes to watch for: 'pivot to alternative "
+            "source', 'retry same approach', 'abort'. Each narrative already "
+            "reports its dead_ends count and event_count — use the reported "
+            "numbers in your comparison, don't compute new ones."
         ),
         signals=(
             "dead_ends, recurring_environmental_issues, "
@@ -157,11 +166,18 @@ LENSES: tuple[Lens, ...] = (
         key="cognitive_arc",
         name="Cognitive arc & timing",
         focus=(
-            "How does the user's effectiveness vary across time-of-day, "
-            "weekday, session length, and burst pattern? Compare focused "
-            "single-burst sessions vs fragmented ones. ONLY surface patterns "
-            "that map to an actionable change (schedule shift, session-length "
-            "limit, mid-session break). Skip pure correlations."
+            "Read the time_of_day_buckets, weekday, bursts, "
+            "primary_burst_minutes, and active_minutes fields. Surface "
+            "patterns about WHEN the user works most effectively. The "
+            "aggregate stats block above already counts sessions by "
+            "time-of-day, weekday, and burst pattern — read those counts. "
+            "Two questions: (1) is there a time-of-day where dead_ends "
+            "are markedly worse, using the numbers in the aggregate "
+            "block? (2) is there a session-length or burst structure "
+            "that correlates with verification or completion in the "
+            "narratives' own reported metrics? ONLY surface patterns "
+            "that map to an actionable change (schedule shift, "
+            "session-length limit, mid-session break)."
         ),
         signals=(
             "time_of_day_buckets, weekday, bursts, primary_burst_minutes, "
@@ -275,7 +291,15 @@ async def _run_lens(
         prior_context=prior_context,
     )
     try:
-        raw = await backend.complete(prompt, model)
+        # Route through _call_llm so the lens benefits from the same
+        # retry/recovery surface as the main synthesizer:
+        #   - rogue-agentic narration ('I am waiting for...') → retry
+        #     with stronger no-tools reminder appended
+        #   - CLI 'hung past 900s' → retry on a fresh subprocess
+        #   - transient HTTP failures → retry with backoff
+        # Bypassing this layer (the original 0.9.0 design) caused 3 of
+        # 7 lenses to silently fail per multilens run.
+        raw = await _call_llm(backend, prompt, model)
         parsed = _extract_json(raw)
         parsed["_lens"] = lens.key
         return parsed
@@ -364,7 +388,7 @@ async def _run_merge(
     concatenation so multi-lens still produces something usable."""
     prompt = _build_merge_prompt(lens_results, target_count=target_count)
     try:
-        raw = await backend.complete(prompt, model)
+        raw = await _call_llm(backend, prompt, model)
         return _extract_json(raw)
     except Exception as exc:
         # Fallback: flatten everything and tag with source_lens, no ranking.
